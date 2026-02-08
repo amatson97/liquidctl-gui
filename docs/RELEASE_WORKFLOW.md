@@ -19,7 +19,7 @@ This guide explains how to manage contributions via pull requests and create rel
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────┐
-│                   Maintainer Review (You)                    │
+│                   Maintainer Review                          │
 │  1. Review PR on GitHub                                      │
 │  2. Request changes or approve                               │
 │  3. Merge to main (via GitHub UI)                            │
@@ -27,14 +27,14 @@ This guide explains how to manage contributions via pull requests and create rel
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────┐
-│                    Your Local Repository                     │
+│                    Local Repository                          │
 │  git checkout main                                           │
-│  git pull origin main      # Pull merged PR                 │
+│  git pull origin main      # Pull merged PR                  │
 └─────────────────────────────────────────────────────────────┘
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────┐
-│                 Prepare for Release                          │
+│                 Prepare for Release (Maintainer)              │
 │  1. Update CHANGELOG.md with merged PRs                      │
 │  2. ./scripts/pre-release-check.sh                           │
 │  3. ./scripts/prepare-release.sh                             │
@@ -43,7 +43,7 @@ This guide explains how to manage contributions via pull requests and create rel
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────┐
-│                    GitHub Actions                            │
+│                    GitHub Actions (Automatic)                │
 │  - Automatically creates GitHub Release                      │
 │  - Attaches CHANGELOG.md                                     │
 │  - Tags the release                                          │
