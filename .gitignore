@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.venv/
+*.swp
+*.swo
+*~
+.DS_Store
+.env
+.env.local
+*.log
+*.pid
+.liquidctl-gui/
+profile.json
+default.json
