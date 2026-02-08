@@ -11,15 +11,55 @@ if [ "${1-}" = "--yes" ] || [ "${1-}" = "-y" ]; then
 fi
 
 RULE_FILE=/etc/udev/rules.d/99-liquidctl.rules
+HELPER_SCRIPT=/usr/local/bin/fix-hwmon-permissions
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TMPFILE=$(mktemp)
 
-cat > "$TMPFILE" <<'EOF'
-# Grant read/write to hwmon pwm and sensor nodes for users in group 'liquidctl'
-SUBSYSTEM=="hwmon", KERNEL=="hwmon*", ACTION=="add", RUN+="/bin/chgrp liquidctl /sys/class/hwmon/%k/*", RUN+="/bin/chmod g+rw /sys/class/hwmon/%k/*"
+# Generate udev rules dynamically from liquidctl
+echo "Generating udev rules from liquidctl device database..."
+if [ -f "$SCRIPT_DIR/generate_udev_rules.py" ]; then
+  # Try to use the venv Python if available
+  if [ -f "$SCRIPT_DIR/../.venv/bin/python3" ]; then
+    PYTHON="$SCRIPT_DIR/../.venv/bin/python3"
+  else
+    PYTHON="python3"
+  fi
+  
+  if $PYTHON "$SCRIPT_DIR/generate_udev_rules.py" > "$TMPFILE" 2>/dev/null; then
+    echo "✓ Generated rules for $(grep -c 'idVendor' "$TMPFILE") vendors"
+  else
+    echo "Warning: Could not generate rules dynamically, using fallback"
+    cat > "$TMPFILE" <<'EOF'
+# Grant access to hidraw nodes for liquidctl-supported devices
+# NZXT
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1e71", MODE:="0660", GROUP:="liquidctl"
+# Corsair
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", MODE:="0660", GROUP:="liquidctl"
+# ASUS
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="0b05", MODE:="0660", GROUP:="liquidctl"
+# EVGA
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="3842", MODE:="0660", GROUP:="liquidctl"
+# Gigabyte
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1044", MODE:="0660", GROUP:="liquidctl"
+# Cooler Master
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="2516", MODE:="0660", GROUP:="liquidctl"
+# Aquacomputer
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="0c70", MODE:="0660", GROUP:="liquidctl"
 
-# Adjust for hidraw nodes created by specific devices if needed
-SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1e71", ATTRS{idProduct}=="2007", MODE:="0660", GROUP:="liquidctl"
+# Fix hwmon permissions when devices are added (works for ALL devices)
+SUBSYSTEM=="hwmon", ACTION=="add", RUN+="/usr/local/bin/fix-hwmon-permissions /sys%p"
 EOF
+  fi
+else
+  echo "Warning: generate_udev_rules.py not found, using fallback rules"
+  cat > "$TMPFILE" <<'EOF'
+# Fallback rules - all major liquidctl vendors
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1e71", MODE:="0660", GROUP:="liquidctl"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", MODE:="0660", GROUP:="liquidctl"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="0b05", MODE:="0660", GROUP:="liquidctl"
+SUBSYSTEM=="hwmon", ACTION=="add", RUN+="/usr/local/bin/fix-hwmon-permissions /sys%p"
+EOF
+fi
 
 echo "This will write the udev rule to: $RULE_FILE"
 if [ "$AUTO_YES" -eq 0 ]; then
@@ -29,6 +69,13 @@ if [ "$AUTO_YES" -eq 0 ]; then
     rm -f "$TMPFILE"
     exit 1
   fi
+fi
+
+echo "Installing helper script to $HELPER_SCRIPT..."
+if [ -f "$SCRIPT_DIR/fix-hwmon-permissions.sh" ]; then
+  sudo install -m 755 "$SCRIPT_DIR/fix-hwmon-permissions.sh" "$HELPER_SCRIPT"
+else
+  echo "Warning: Helper script not found at $SCRIPT_DIR/fix-hwmon-permissions.sh"
 fi
 
 echo "Writing udev rule as root..."
@@ -43,9 +90,33 @@ sudo usermod -aG liquidctl "$USER"
 
 echo "Reloading udev rules and triggering..."
 sudo udevadm control --reload
-sudo udevadm trigger
+sudo udevadm trigger --subsystem-match=hwmon
 
-echo "Done. You may need to replug affected USB devices and re-login for group membership to take effect."
-echo "If you prefer not to add your user to the group, you can run the GUI with sudo (not recommended)."
+echo "Fixing permissions on existing hwmon devices..."
+for hwmon_dev in /sys/class/hwmon/hwmon*; do
+  if [ -d "$hwmon_dev" ]; then
+    sudo "$HELPER_SCRIPT" "$hwmon_dev" || true
+  fi
+done
+
+echo "Fixing permissions on existing hidraw devices..."
+# Apply permissions to already-connected devices
+for hidraw_dev in /dev/hidraw*; do
+  if [ -e "$hidraw_dev" ]; then
+    # Get vendor ID from device
+    vid=$(udevadm info -a "$hidraw_dev" 2>/dev/null | grep -m1 'ATTRS{idVendor}' | cut -d'"' -f2)
+    # Check if this vendor is in our rules file
+    if [ -n "$vid" ] && grep -q "\"$vid\"" "$RULE_FILE" 2>/dev/null; then
+      echo "  Updating $hidraw_dev (vendor: $vid)"
+      sudo chgrp liquidctl "$hidraw_dev" 2>/dev/null || true
+      sudo chmod 0660 "$hidraw_dev" 2>/dev/null || true
+    fi
+  fi
+done
+
+echo ""
+echo "Done! Permissions have been applied."
+echo "Verify: ls -la /dev/hidraw* | grep liquidctl"
+echo "        ls -la /sys/class/hwmon/hwmon*/pwm*"
 
 exit 0

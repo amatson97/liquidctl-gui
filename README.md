@@ -1,18 +1,24 @@
 # liquidctl-gui
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![GitHub](https://img.shields.io/badge/GitHub-amatson97%2Fliquidctl--gui-blue?logo=github)](https://github.com/amatson97/liquidctl-gui)
 
-A small GTK GUI for controlling liquidctl-compatible devices. Dynamically detects and configures supported hardware.
+**Version 0.2.0** — [Changelog](CHANGELOG.md)
+
+A GTK GUI for controlling liquidctl-compatible devices. Dynamically detects and configures supported hardware with automatic initialization and persistent settings.
 
 Credit: built on top of https://github.com/liquidctl/liquidctl
 
 ## Features
-- Dynamic device detection with automatic capability discovery
-- LED color control with mode selection (fixed, breathing, pulse, etc.)
-- Pump and fan speed control (0-100%)
-- Live status monitoring for supported devices
-- Device initialization
-- Profile save/load for settings persistence
+- **Dynamic device detection** with automatic capability discovery
+- **Auto-initialization on startup** — devices are ready to use immediately
+- **Persistent device configurations** — UI loads with all controls on every launch
+- **LED color control** with mode selection (fixed, breathing, pulse, spectrum-wave, etc.)
+- **Pump and fan speed control** (0-100%)
+- **Live status monitoring** with auto-refresh for supported devices
+- **Profile save/load** for quick settings restoration
+- **Settings dialog** for customizing auto-initialization and refresh intervals
+- **No manual setup required** after first detection
 
 ## Requirements
 - Python 3
@@ -62,11 +68,21 @@ Notes:
 - Close NZXT CAM if it is running to avoid device conflicts.
 
 ## Configuration
-User configuration is stored at ~/.liquidctl-gui/config.json.
-- First run builds this file from detected devices.
-- Subsequent launches reuse the saved devices and settings.
+User configuration is stored at `~/.liquidctl-gui/config.json`.
+- **First run**: Detects devices and saves their full capabilities (channels, modes, etc.)
+- **Subsequent launches**: Automatically loads devices with all controls ready
+- **Device capabilities** are refreshed on each startup to ensure accuracy
+- **Auto-initialization** happens automatically (configurable in Settings)
 
-If present, default.json provides initial values for colors, modes, and speeds.
+Optional profile support:
+- Save current settings via "Save Profile" button
+- Load profiles via "Load Profile" button
+- Auto-loaded from `~/.liquidctl-gui/example.json` if present
+
+### Settings Dialog
+Click the "Settings" button to configure:
+- **Auto-initialize on startup** — automatically initialize all devices when the app starts
+- **Auto-refresh interval** — how often to update device status (1-60 seconds)
 
 ## How It Works
 When liquidctl is installed via pip, the GUI uses the Python API directly to:
@@ -84,10 +100,33 @@ This means the GUI automatically supports any device that liquidctl supports, wi
 ## Contributing
 Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
+## Releasing
+
+For maintainers: Use the automated release scripts in [scripts/](scripts/):
+
+```bash
+# Interactive release wizard
+./scripts/prepare-release.sh
+
+# Or direct release
+./scripts/release.sh 0.3.0
+```
+
+See [scripts/README.md](scripts/README.md) for details.
+
+## Recent Updates (v0.2.0)
+- ✅ **Auto-initialization on startup** — devices initialize automatically
+- ✅ **Persistent device capabilities** — full UI loads without clicking "Detect Devices"
+- ✅ **Settings dialog** — configure auto-init and refresh intervals
+- ✅ **Enhanced config management** — device capabilities saved and restored
+- ✅ **Improved startup flow** — app is ready to use immediately
+
 ## Roadmap
-- Additional effect modes per device
-- System tray integration
-- Startup on boot configuration
+- Fan curve editor for advanced cooling control
+- System tray integration with quick controls
+- Additional effect presets and animations
+- GUI visual improvements and theming
+- Per-device profile management
 
 ## License
 MIT License - see [LICENSE](LICENSE) for details

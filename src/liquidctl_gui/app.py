@@ -11,13 +11,14 @@ import logging
 import shutil
 from pathlib import Path
 
+from . import __version__
 from .lib.config import load_config, save_config
 from .lib.config_helpers import ConfigHelpers
 from .lib.functions import DeviceInfo, LiquidctlCore
 from .lib.ui_helpers import UiHelpers
 
 
-APP_TITLE = "Liquidctl Controller"
+APP_TITLE = f"Liquidctl Controller v{__version__}"
 APP_ID = "com.liquidctl.gui"
 WINDOW_WIDTH = 900
 WINDOW_HEIGHT = 680
@@ -34,6 +35,7 @@ DEFAULT_CONFIG = {
     "status_text_height": STATUS_TEXT_HEIGHT,
     "auto_refresh_seconds": AUTO_REFRESH_SECONDS,
     "auto_refresh_enabled": True,
+    "auto_initialize_on_startup": True,
     "default_speed": DEFAULT_SPEED,
     "speed_presets": [40, 60, 80, 100],
     "preset_colors": [
@@ -304,6 +306,7 @@ if GTK_AVAILABLE:
 
             self.add_button(controls, "Save Profile", self.save_profile)
             self.add_button(controls, "Load Profile", self.load_profile)
+            self.add_button(controls, "Settings", self.show_settings)
 
             status_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
             status_row.set_border_width(2)
@@ -353,6 +356,7 @@ if GTK_AVAILABLE:
             detail_paned.pack2(status_frame, resize=False, shrink=False)
 
         def load_devices_from_config(self):
+            """Load devices from config and populate with fresh capabilities from discovery."""
             self.devices = []
             self.plugins.clear()
 
@@ -361,21 +365,49 @@ if GTK_AVAILABLE:
 
             devices_cfg = self.config.get("devices", [])
             if not devices_cfg:
-                row = Gtk.ListBoxRow()
-                row.add(Gtk.Label(label="No devices configured"))
-                self.device_list.add(row)
-                self.device_list.show_all()
-                self.show_empty_state()
-                self.status_label.set_text("No devices configured")
+                self._logger.info("No devices in config, running detection")
+                self.detect_devices()
                 return
 
+            # Discover actual devices to get current capabilities
+            self._logger.info("Loading %d device(s) from config and refreshing capabilities", len(devices_cfg))
+            try:
+                discovered = self.core.find_devices()
+                discovered_map = {d.match: d for d in discovered}
+                self._logger.debug("Discovered %d device(s)", len(discovered))
+            except Exception:
+                self._logger.exception("Failed to discover devices, using config data only")
+                discovered_map = {}
+
+            # Match config entries with discovered devices and merge capabilities
             for entry in devices_cfg:
                 name = entry.get("name")
                 if not name:
                     continue
                 match = entry.get("match", name)
                 device_type = entry.get("type", "generic")
-                device = DeviceInfo(name=name, match=match, device_type=device_type)
+                
+                # If device was discovered, use its full capabilities
+                if match in discovered_map:
+                    device = discovered_map[match]
+                    # Preserve the configured type if set
+                    if device_type != "generic":
+                        device.device_type = device_type
+                    self._logger.debug("Loaded %s with capabilities from discovery", name)
+                else:
+                    # Device not found, create from config with saved capabilities if available
+                    device = DeviceInfo(
+                        name=name,
+                        match=match,
+                        device_type=device_type,
+                        color_channels=entry.get("color_channels", []),
+                        speed_channels=entry.get("speed_channels", []),
+                        color_modes=entry.get("color_modes", []),
+                        supports_lighting=entry.get("supports_lighting", False),
+                        supports_cooling=entry.get("supports_cooling", False),
+                    )
+                    self._logger.warning("Device %s not discovered, using saved config", name)
+                
                 self.devices.append(device)
                 row = Gtk.ListBoxRow()
                 row.device = device
@@ -384,20 +416,28 @@ if GTK_AVAILABLE:
                 self.plugins[device.name] = self.plugin_for_device(device)
 
             self.device_list.show_all()
-            self.device_list.select_row(self.device_list.get_row_at_index(0))
-            # Ensure the core / API has performed device discovery so that
-            # subsequent status queries can map configured device descriptions
-            # to actual device instances. This keeps the configured device
-            # list but populates the underlying API device map.
-            try:
-                self._logger.debug("Performing background device discovery to populate API map")
-                self.core.find_devices()
-            except Exception:
-                self._logger.exception("Failed to prime device discovery after loading config")
+            if self.devices:
+                self.device_list.select_row(self.device_list.get_row_at_index(0))
+                # Save discovered capabilities to config
+                self.update_config_devices()
+                # Auto-initialize if enabled
+                if self.config.get("auto_initialize_on_startup", True):
+                    self._logger.info("Auto-initializing devices on startup")
+                    GLib.timeout_add(500, self._auto_initialize_devices)
 
         def update_config_devices(self):
+            """Save devices to config with full capabilities."""
             self.config["devices"] = [
-                {"name": device.name, "match": device.match, "type": device.device_type}
+                {
+                    "name": device.name,
+                    "match": device.match,
+                    "type": device.device_type,
+                    "color_channels": device.color_channels,
+                    "speed_channels": device.speed_channels,
+                    "color_modes": device.color_modes,
+                    "supports_lighting": device.supports_lighting,
+                    "supports_cooling": device.supports_cooling,
+                }
                 for device in self.devices
             ]
             save_config(self.config)
@@ -788,6 +828,55 @@ if GTK_AVAILABLE:
             )
             dialog.format_secondary_text(message)
             dialog.run()
+            dialog.destroy()
+
+        def _auto_initialize_devices(self):
+            """Auto-initialize all devices on startup (called via timeout)."""
+            try:
+                self._logger.info("Auto-initializing %d device(s)", len(self.plugins))
+                for plugin in self.plugins.values():
+                    plugin.initialize()
+                self.status_label.set_text("Devices auto-initialized")
+            except Exception:
+                self._logger.exception("Auto-initialization failed")
+            return False  # Don't repeat
+
+        def show_settings(self):
+            """Show settings dialog."""
+            dialog = Gtk.Dialog(
+                title="Settings",
+                parent=self,
+                flags=0,
+                buttons=(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL, Gtk.STOCK_OK, Gtk.ResponseType.OK)
+            )
+            dialog.set_default_size(400, 200)
+            
+            box = dialog.get_content_area()
+            box.set_border_width(10)
+            box.set_spacing(10)
+
+            # Auto-initialize setting
+            auto_init_check = Gtk.CheckButton(label="Auto-initialize devices on startup")
+            auto_init_check.set_active(self.config.get("auto_initialize_on_startup", True))
+            box.pack_start(auto_init_check, False, False, 0)
+
+            # Auto-refresh interval
+            interval_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            interval_box.pack_start(Gtk.Label(label="Auto-refresh interval (seconds):"), False, False, 0)
+            interval_spin = Gtk.SpinButton.new_with_range(1, 60, 1)
+            interval_spin.set_value(self.config.get("auto_refresh_seconds", AUTO_REFRESH_SECONDS))
+            interval_box.pack_start(interval_spin, False, False, 0)
+            box.pack_start(interval_box, False, False, 0)
+
+            box.show_all()
+            response = dialog.run()
+            
+            if response == Gtk.ResponseType.OK:
+                self.config["auto_initialize_on_startup"] = auto_init_check.get_active()
+                self.config["auto_refresh_seconds"] = int(interval_spin.get_value())
+                save_config(self.config)
+                self.show_info("Settings saved. Restart may be required for some changes.")
+            
             dialog.destroy()
 
         def check_dependencies(self):
