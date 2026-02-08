@@ -20,6 +20,9 @@ Credit: built on top of https://github.com/liquidctl/liquidctl
 ### Color Picker
 ![Colour Picker](images/colour_picker.png)
 
+#### Custom Color Picker
+![Custom Colour Picker](images/custom_colour_picker.png)
+
 ## Features
 - **Dynamic device detection** with automatic capability discovery
 - **Auto-initialization on startup** — devices are ready to use immediately
