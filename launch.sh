@@ -23,7 +23,7 @@ fi
 
 if [ ! -d "$VENV_DIR" ]; then
 	echo "Creating virtual environment in $VENV_DIR (recommended)."
-	$PYTHON -m venv "$VENV_DIR"
+	$PYTHON -m venv --system-site-packages "$VENV_DIR"
 fi
 
 # Activate venv for this script
