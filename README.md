@@ -166,6 +166,7 @@ See [scripts/README.md](scripts/README.md) for details.
 - **[MEDIUM]** Per-device profile management
 - **[LOW]** Additional effect presets and animations
 - **[LOW]** GUI visual improvements and theming
+- **[LOW]** Add drop down to GUI to swith between multiple saved profiles
 
 **Priority Levels:**
 - **CRITICAL** — Essential for hardware safety and protection
