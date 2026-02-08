@@ -34,7 +34,7 @@ This guide explains how to manage contributions via pull requests and create rel
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────┐
-│                 Prepare for Release (Maintainer)              │
+│                 Prepare for Release (Maintainer)             │
 │  1. Update CHANGELOG.md with merged PRs                      │
 │  2. ./scripts/pre-release-check.sh                           │
 │  3. ./scripts/prepare-release.sh                             │
