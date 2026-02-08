@@ -88,8 +88,8 @@ body:
     id: liquidctl-version
     attributes:
       label: liquidctl Version
-      description: Run `liquidctl --version` or `pip show liquidctl`
-      placeholder: "e.g., 1.13.0"
+      description: "From the project directory, run: `source .venv/bin/activate && pip show liquidctl | grep Version`"
+      placeholder: "e.g., Version: 1.13.0"
     validations:
       required: true
   
