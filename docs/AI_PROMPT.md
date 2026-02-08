@@ -67,3 +67,127 @@ The config now includes:
 - `auto_initialize_on_startup` boolean (default: true)
 - `auto_refresh_enabled` and `auto_refresh_seconds` for status polling
 - Window size, presets, and UI preferences
+
+---
+
+## Workflow Summary for AI Assistance
+
+### Branch Management
+**Creating a feature branch:**
+```bash
+git checkout -b feature/your-feature-name
+# Work on changes...
+git add .
+git commit -m "Description of changes"
+git push -u origin feature/your-feature-name
+```
+
+**Switching between branches:**
+```bash
+git checkout main           # Switch to main branch
+git checkout feature/name   # Switch to existing feature branch
+git branch                  # List all local branches
+git branch -a               # List all branches (local + remote)
+```
+
+**Updating your branch with latest main:**
+```bash
+git checkout main
+git pull
+git checkout feature/your-feature-name
+git merge main
+# Or use rebase: git rebase main
+```
+
+### Making Changes
+**Standard development workflow:**
+1. Create/switch to feature branch
+2. Make code changes
+3. Run tests: `PYTHONPATH=src python3 -m unittest tests.test_unit`
+4. Test the app: `./launch.sh`
+5. Commit changes with clear messages
+6. Push to your fork or branch
+
+**Commit best practices:**
+- Use descriptive commit messages
+- Keep commits focused on single changes
+- Reference issues if applicable: "Fix #123: Description"
+
+### Pull Requests (PRs)
+**For contributors (fork workflow):**
+1. Fork the repository on GitHub
+2. Clone your fork: `git clone https://github.com/YOUR_USERNAME/liquidctl-gui.git`
+3. Add upstream: `git remote add upstream https://github.com/amatson97/liquidctl-gui.git`
+4. Create feature branch: `git checkout -b feature/name`
+5. Make changes, commit, and push to your fork
+6. Open PR from your fork to upstream main branch
+7. Address review feedback by pushing new commits to the same branch
+
+**For maintainers:**
+1. Review PR changes and test locally if needed
+2. Merge PR via GitHub UI (squash, merge commit, or rebase)
+3. Delete feature branch after merge
+
+### Release Workflow (Maintainers Only)
+
+**Using prepare-release.sh (Recommended):**
+```bash
+./scripts/prepare-release.sh
+```
+
+This interactive wizard will:
+1. Prompt for version number (e.g., 0.3.0)
+2. Validate version format (semantic versioning)
+3. Check for uncommitted changes (requires clean working directory)
+4. Run full test suite and abort if tests fail
+5. Update version in `src/liquidctl_gui/__init__.py`
+6. Create release entry in CHANGELOG.md (opens editor for you)
+7. Create git commit with release changes
+8. Create annotated git tag (e.g., v0.3.0)
+9. Prompt to push changes and tag to GitHub
+10. GitHub Actions automatically creates release with CHANGELOG notes
+
+**Manual release steps:**
+```bash
+# 1. Update version
+# Edit src/liquidctl_gui/__init__.py: __version__ = "0.3.0"
+
+# 2. Update CHANGELOG.md with release notes
+
+# 3. Run tests
+PYTHONPATH=src python3 -m unittest tests.test_unit
+
+# 4. Commit release
+git add src/liquidctl_gui/__init__.py CHANGELOG.md
+git commit -m "Release v0.3.0"
+
+# 5. Create and push tag
+git tag -a v0.3.0 -m "Release v0.3.0"
+git push origin main
+git push origin v0.3.0
+
+# 6. GitHub Actions will auto-create the release
+```
+
+**Important release notes:**
+- Only maintainers with write access can push tags and trigger releases
+- Contributors working in forks cannot create releases in the upstream repo
+- Always run tests before releasing
+- Use semantic versioning: MAJOR.MINOR.PATCH
+- GitHub Actions workflow automatically creates releases when tags are pushed
+- Release scripts include fork detection to prevent accidental tag creation
+
+**Quick reference commands:**
+```bash
+# Check current version
+grep __version__ src/liquidctl_gui/__init__.py
+
+# View recent tags
+git tag -l
+
+# View CHANGELOG
+cat CHANGELOG.md
+
+# Pre-release validation
+./scripts/pre-release-check.sh
+```
