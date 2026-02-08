@@ -9,6 +9,29 @@ A GTK GUI for controlling liquidctl-compatible devices. Dynamically detects and 
 
 Credit: built on top of https://github.com/liquidctl/liquidctl
 
+---
+
+## ⚠️ Important Safety Warning
+
+**USE AT YOUR OWN RISK** — This application directly controls hardware cooling and lighting systems. Improper configuration may lead to:
+- Hardware overheating and thermal damage
+- Reduced component lifespan
+- System instability or crashes
+- Voided warranties
+
+**NO LIABILITY** — The project owner and contributors accept **NO RESPONSIBILITY** for any hardware damage, data loss, or other consequences resulting from the use of this software. You assume all risks associated with modifying your hardware settings.
+
+**SAFETY FEATURES IN DEVELOPMENT** — Automatic thermal safety monitoring and override systems are planned but **not yet implemented**. Until these features are available, users must manually monitor system temperatures and ensure cooling settings are adequate for their hardware.
+
+**RECOMMENDATIONS:**
+- Always monitor temperatures when changing cooling settings
+- Start with conservative (higher) pump/fan speeds and reduce gradually
+- Keep manufacturer software installed as a backup
+- Test new settings under load and verify thermal performance
+- Know your hardware's safe operating temperature ranges
+
+---
+
 ## Screenshots
 
 ### Main Interface
@@ -136,11 +159,18 @@ See [scripts/README.md](scripts/README.md) for details.
 - ✅ **Improved startup flow** — app is ready to use immediately
 
 ## Roadmap
-- Fan curve editor for advanced cooling control
-- System tray integration with quick controls
-- Additional effect presets and animations
-- GUI visual improvements and theming
-- Per-device profile management
+- **[CRITICAL]** Thermal safety monitoring with automatic override of unsafe cooling settings during critical temperature conditions
+- **[HIGH]** Fan curve editor for advanced cooling control
+- **[MEDIUM]** System tray integration with quick controls
+- **[MEDIUM]** Per-device profile management
+- **[LOW]** Additional effect presets and animations
+- **[LOW]** GUI visual improvements and theming
+
+**Priority Levels:**
+- **CRITICAL** — Essential for hardware safety and protection
+- **HIGH** — Important features that significantly improve functionality
+- **MEDIUM** — Useful enhancements that improve user experience
+- **LOW** — Nice-to-have features and cosmetic improvements
 
 ## License
 MIT License - see [LICENSE](LICENSE) for details
