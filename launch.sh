@@ -28,16 +28,18 @@ fi
 
 # Activate venv for this script
 source "$VENV_DIR/bin/activate"
-python -m pip install --upgrade pip
+# Use venv's python from now on
+PYTHON="$VENV_DIR/bin/python"
+$PYTHON -m pip install --upgrade pip
 
 # Install liquidctl in the venv (recommended for GUI integration)
-if ! python -c "import liquidctl" >/dev/null 2>&1; then
+if ! $PYTHON -c "import liquidctl" >/dev/null 2>&1; then
 	echo "Installing liquidctl into virtualenv..."
 	pip install liquidctl
 fi
 
 # Check for GTK Python bindings (system packages)
-if ! python -c "import gi" >/dev/null 2>&1; then
+if ! $PYTHON -c "import gi" >/dev/null 2>&1; then
 	echo "Python GTK bindings (python3-gi / gir1.2-gtk-3.0) not found."
 	if command -v apt-get >/dev/null 2>&1; then
 		if [ "$AUTO_YES" -eq 1 ]; then
@@ -108,4 +110,4 @@ if [ "$need_udev_install" -eq 1 ]; then
 fi
 
 # Run the GUI; keep sudo only if necessary for device access
-PYTHONPATH=src python -m liquidctl_gui
+PYTHONPATH=src $PYTHON -m liquidctl_gui
