@@ -9,6 +9,17 @@ A GTK GUI for controlling liquidctl-compatible devices. Dynamically detects and 
 
 Credit: built on top of https://github.com/liquidctl/liquidctl
 
+## Screenshots
+
+### Main Interface
+![Main Screen](images/main_screen.png)
+
+### LED Mode Selection
+![LED Mode](images/led_mode.png)
+
+### Color Picker
+![Colour Picker](images/colour_picker.png)
+
 ## Features
 - **Dynamic device detection** with automatic capability discovery
 - **Auto-initialization on startup** — devices are ready to use immediately
