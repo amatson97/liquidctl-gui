@@ -78,10 +78,14 @@ echo "  ✓ Version updated to $VERSION"
 
 # Run tests
 echo -e "${GREEN}[2/6] Running tests...${NC}"
-if PYTHONPATH=src python -m unittest tests.test_unit 2>&1 | tail -1 | grep -q "OK"; then
+TEST_OUTPUT=$(PYTHONPATH=src python3 -m unittest tests.test_unit 2>&1)
+if echo "$TEST_OUTPUT" | grep -q "^OK"; then
+    echo "  ✓ All tests passed"
+elif echo "$TEST_OUTPUT" | grep -q "Ran.*tests.*OK"; then
     echo "  ✓ All tests passed"
 else
     echo -e "${RED}Error: Tests failed!${NC}"
+    echo "$TEST_OUTPUT" | tail -5
     read -p "Continue anyway? (y/N): " -n 1 -r
     echo
     if [[ ! $REPLY =~ ^[Yy]$ ]]; then
