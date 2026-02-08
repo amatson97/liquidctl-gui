@@ -2,6 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![GitHub](https://img.shields.io/badge/GitHub-amatson97%2Fliquidctl--gui-blue?logo=github)](https://github.com/amatson97/liquidctl-gui)
+![Maintenance](https://img.shields.io/badge/Maintained%3F-yes-green.svg)
 
 **Version 0.2.0** — [Changelog](CHANGELOG.md)
 
