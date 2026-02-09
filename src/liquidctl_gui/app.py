@@ -8,6 +8,7 @@ Ensure system GTK bindings (python3-gi, gir1.2-gtk-3.0) are provided by your dis
 
 import json
 import logging
+import os
 import re
 import shutil
 import subprocess
@@ -50,6 +51,7 @@ DEFAULT_CONFIG = {
     "auto_initialize_on_startup": True,
     "default_speed": DEFAULT_SPEED,
     "speed_presets": [40, 60, 80, 100],
+    "log_level": "INFO",
     "preset_colors": [
         {"label": "White", "value": "#f0f8ff"},
         {"label": "Ice Blue", "value": "#4682b4"},
@@ -59,6 +61,13 @@ DEFAULT_CONFIG = {
     ],
     "devices": []  # Populated by dynamic device discovery
 }
+
+
+def _resolve_log_level(config):
+    env_level = os.environ.get("LIQUIDCTL_GUI_LOG_LEVEL", "").strip()
+    configured_level = str(config.get("log_level", "INFO")).strip()
+    level_name = (env_level or configured_level).upper()
+    return logging._nameToLevel.get(level_name, logging.INFO)
 
 
 try:
@@ -287,7 +296,7 @@ if GTK_AVAILABLE:
             self._window_initialized = False
 
             logging.basicConfig(
-                level=logging.DEBUG,
+                level=_resolve_log_level(self.config),
                 format="[%(asctime)s] [%(levelname)s] %(name)s: %(message)s",
                 datefmt="%H:%M:%S"
             )
@@ -397,6 +406,16 @@ if GTK_AVAILABLE:
             init_all_item = Gtk.MenuItem(label="Initialize All")
             init_all_item.connect("activate", lambda *_: self.initialize_all())
             devices_menu.append(init_all_item)
+
+            # Settings menu
+            settings_menu = Gtk.Menu()
+            settings_item = Gtk.MenuItem(label="Settings")
+            settings_item.set_submenu(settings_menu)
+            menubar.append(settings_item)
+
+            prefs_item = Gtk.MenuItem(label="Preferences...")
+            prefs_item.connect("activate", lambda *_: self.show_settings())
+            settings_menu.append(prefs_item)
 
             # Help menu
             help_menu = Gtk.Menu()
@@ -1132,6 +1151,61 @@ if GTK_AVAILABLE:
             dialog.show_all()
             dialog.run()
             dialog.destroy()
+
+        def show_settings(self):
+            """Show settings dialog for user preferences."""
+            dialog = Gtk.Dialog(
+                title="Settings",
+                transient_for=self,
+                modal=True,
+                destroy_with_parent=True
+            )
+            dialog.add_button(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL)
+            dialog.add_button(Gtk.STOCK_OK, Gtk.ResponseType.OK)
+            dialog.set_default_size(420, 200)
+
+            content = dialog.get_content_area()
+            content.set_border_width(12)
+            content.set_spacing(10)
+
+            log_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            content.pack_start(log_row, False, False, 0)
+            log_label = Gtk.Label(label="Log level")
+            log_label.set_xalign(0)
+            log_row.pack_start(log_label, True, True, 0)
+
+            log_levels = ["ERROR", "WARNING", "INFO", "DEBUG"]
+            current_level = str(self.config.get("log_level", "INFO")).upper()
+            log_combo = Gtk.ComboBoxText()
+            for level in log_levels:
+                log_combo.append_text(level)
+            log_combo.set_active(log_levels.index(current_level) if current_level in log_levels else 2)
+            log_row.pack_start(log_combo, False, False, 0)
+
+            note = Gtk.Label(
+                label="Changes apply immediately. Environment variable LIQUIDCTL_GUI_LOG_LEVEL overrides this setting."
+            )
+            note.set_xalign(0)
+            note.set_line_wrap(True)
+            note.set_margin_top(6)
+            content.pack_start(note, False, False, 0)
+
+            dialog.show_all()
+            response = dialog.run()
+            if response == Gtk.ResponseType.OK:
+                selected = log_combo.get_active_text() or "INFO"
+                self.config["log_level"] = selected
+                save_config(self.config)
+                self._apply_log_level()
+            dialog.destroy()
+
+        def _apply_log_level(self):
+            level = _resolve_log_level(self.config)
+            root_logger = logging.getLogger()
+            root_logger.setLevel(level)
+            for handler in root_logger.handlers:
+                handler.setLevel(level)
+            self._logger.setLevel(level)
 
         def _on_window_destroy(self, widget):
             """Cleanup when window is destroyed."""
