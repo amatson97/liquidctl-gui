@@ -4,7 +4,7 @@
 [![GitHub](https://img.shields.io/badge/GitHub-amatson97%2Fliquidctl--gui-blue?logo=github)](https://github.com/amatson97/liquidctl-gui)
 ![Maintenance](https://img.shields.io/badge/Maintained%3F-yes-green.svg)
 
-**Version 0.2.0** — [Changelog](CHANGELOG.md)
+**Version 1.0.0** — [Changelog](CHANGELOG.md)
 
 A GTK GUI for controlling liquidctl-compatible devices **and motherboard PWM fans**. Dynamically detects and configures supported hardware with automatic initialization and persistent settings.
 
@@ -158,7 +158,7 @@ For maintainers: Use the automated release scripts in [scripts/](scripts/):
 
 See [scripts/README.md](scripts/README.md) for details.
 
-## Recent Updates (v0.2.0)
+## Recent Updates (v1.0.0)
 - ✅ **Auto-initialization on startup** — devices initialize automatically
 - ✅ **Persistent device capabilities** — full UI loads without clicking "Detect Devices"
 - ✅ **Settings dialog** — configure auto-init and refresh intervals

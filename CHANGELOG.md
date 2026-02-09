@@ -7,27 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-02-09
+
 ### Added
-- **Backend plugin architecture**: Extensible system for supporting multiple hardware control APIs
-- **Priority-based discovery**: Backends are queried by priority (liquidctl=90, hwmon=50) with automatic deduplication
-- **Sysfs path deduplication**: Higher-priority backends claim device paths to prevent duplicate control
-- **Decorator-based registration**: New backends auto-register using `@register_backend`
-- **Backend documentation**: Comprehensive guide for adding new backends in `src/liquidctl_gui/lib/backends/README.md`
+- Backend plugin architecture with priority-based discovery and deduplication (liquidctl + hwmon)
+- Motherboard PWM fan control via hwmon with safety floor and writeability checks
+- Profile manager with named profiles, auto-save/restore, and load/delete UI
+- New documentation: architecture, error codes, troubleshooting, profile management
 
 ### Changed
-- Refactored device discovery to use backend plugin system (liquidctl and hwmon backends)
-- `detect_devices()` and `load_devices_from_config()` now use unified `discover_devices()` API
-- Dynamic sysfs path matching replaces hardcoded device name filtering
-- Backend system automatically handles multiple device types without special cases in main app
+- App refactored into focused modules (`device_controller.py`, `profile_manager.py`)
+- Device discovery now unified through backend registry
+- Status panel aggregates system sensors + device status
 
-### Technical
-- Created `src/liquidctl_gui/lib/backends/` module with abstract base class
-- Implemented `DeviceBackend` ABC with `BackendCapabilities` dataclass
-- Created `BackendRegistry` for managing backend registration and discovery
-- Implemented `LiquidctlBackend` (priority 90) for USB/PCIe devices
-- Implemented `HwmonBackend` (priority 50) for motherboard PWM fans
-- Sysfs path resolution via PyUSB bus/address lookup for deduplication
-- All unit tests passing (19/19)
+### Fixed
+- Startup dialogs for missing devices (now gracefully skipped)
+- LED preset save issues (now persists sync colors/modes correctly)
+- amdgpu read-only PWM errors (filtered out on discovery)
 
 ## [0.2.0] - 2026-02-08
 
@@ -82,5 +78,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Configurable auto-refresh intervals
 - User configuration persistence
 
+[1.0.0]: https://github.com/amatson97/liquidctl-gui/compare/v0.2.0...v1.0.0
 [0.2.0]: https://github.com/amatson97/liquidctl-gui/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/amatson97/liquidctl-gui/releases/tag/v0.1.0
