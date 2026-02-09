@@ -3,7 +3,8 @@
 import logging
 import os
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any, Callable, Optional, List
+from pathlib import Path
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -30,6 +31,47 @@ class DeviceCapabilities:
     color_modes: list = field(default_factory=list)
     supports_lighting: bool = False
     supports_cooling: bool = False
+
+
+def get_device_sysfs_path(device) -> Optional[str]:
+    """
+    Extract the sysfs device path from a liquidctl device object.
+    Returns canonical device path (e.g., /sys/devices/pci0000:00/.../usb1/1-1) or None.
+    """
+    try:
+        # Try to get USB device path (most liquidctl devices are USB)
+        if hasattr(device, 'device'):
+            usb_device = device.device
+            # PyUSB device objects have bus and address
+            if hasattr(usb_device, 'bus') and hasattr(usb_device, 'address'):
+                bus_num = usb_device.bus
+                dev_num = usb_device.address
+                # Scan for matching USB device in sysfs
+                usb_devices_root = Path('/sys/bus/usb/devices')
+                if usb_devices_root.exists():
+                    for usb_dir in usb_devices_root.iterdir():
+                        try:
+                            # Check busnum and devnum files
+                            busnum_file = usb_dir / 'busnum'
+                            devnum_file = usb_dir / 'devnum'
+                            if busnum_file.exists() and devnum_file.exists():
+                                bus = int(busnum_file.read_text().strip())
+                                dev = int(devnum_file.read_text().strip())
+                                if bus == bus_num and dev == dev_num:
+                                    # Resolve to real path
+                                    return str(usb_dir.resolve())
+                        except (ValueError, OSError):
+                            continue
+        
+        # Try alternate methods for other device types
+        # Some drivers expose _device_path or similar attributes
+        if hasattr(device, '_device_path'):
+            return str(device._device_path)
+        
+        return None
+    except Exception as e:
+        _LOGGER.debug("Failed to get sysfs path for device %s: %s", getattr(device, 'description', 'unknown'), e)
+        return None
 
 
 def _extract_driver_constants(driver_class, device_instance=None):
@@ -179,6 +221,10 @@ class LiquidctlAPI:
 
     def get_device(self, description: str):
         """Get a device instance by its description."""
+        # Lazy-load devices if map is empty
+        if not self._device_map:
+            _LOGGER.debug("[API] Device map empty, loading devices...")
+            self.find_devices()
         return self._device_map.get(description)
 
     def get_capabilities(self, description: str) -> DeviceCapabilities | None:
@@ -187,6 +233,21 @@ class LiquidctlAPI:
             if caps.description == description:
                 return caps
         return None
+    
+    def get_device_sysfs_paths(self) -> List[str]:
+        """
+        Get sysfs device paths for all discovered liquidctl devices.
+        Used to filter out hwmon devices that are managed by liquidctl.
+        Returns list of canonical device paths.
+        """
+        paths = []
+        for device in self._device_map.values():
+            path = get_device_sysfs_path(device)
+            if path:
+                paths.append(path)
+                _LOGGER.debug("[API] Device %s has sysfs path: %s", 
+                             getattr(device, 'description', 'unknown'), path)
+        return paths
 
     def initialize(self, description: str) -> tuple[list, str]:
         """Initialize a device and return (status_list, error_string)."""
@@ -230,10 +291,19 @@ class LiquidctlAPI:
             return False, f"Device not found: {description}"
 
         try:
+            # Modes that don't require colors (they generate their own effects)
+            modes_without_color = {
+                "spectrum-wave", "color-cycle", "off", "marquee-3", "marquee-4", 
+                "marquee-5", "marquee-6", "covering-marquee", "alternating-3", 
+                "alternating-4", "alternating-5", "moving-alternating-3", 
+                "moving-alternating-4", "moving-alternating-5", "rainbow-flow", 
+                "super-rainbow", "rainbow-pulse"
+            }
+            
             # If mode requires a color (e.g. 'fixed') but no colors were supplied,
             # return a clear error instead of calling into the driver which will
             # raise an exception.
-            if (not colors) and (mode != 'off'):
+            if (not colors) and (mode not in modes_without_color):
                 _LOGGER.warning("[API] set_color: no colors provided for mode=%s device=%s channel=%s", mode, description, channel)
                 return False, "No colors provided for mode"
 

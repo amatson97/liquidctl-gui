@@ -12,3 +12,7 @@ __pycache__/
 .liquidctl-gui/
 profile.json
 default.json
+lib/
+*.egg-info/
+dist/
+build/

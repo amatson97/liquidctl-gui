@@ -1,6 +1,32 @@
-# Release Automation Scripts
+# Scripts Directory
 
-This directory contains helper scripts for managing releases.
+This directory contains helper scripts for release management and debugging.
+
+## Debugging Tools
+
+### `debug.sh`
+Runs the application with detailed logging output, saving all logs to `app_debug.log`.
+
+Useful for:
+- Troubleshooting profile loading issues
+- Verifying device commands are sent correctly
+- Debugging sync mode application
+- Checking startup sequence
+
+**Usage:**
+```bash
+./scripts/debug.sh
+```
+
+Logs are saved to `app_debug.log` in the project root. Use grep to filter:
+```bash
+grep -E "(Applied|ERROR|WARNING)" app_debug.log
+grep "sync" app_debug.log
+```
+
+---
+
+# Release Automation Scripts
 
 ## Quick Start
 
@@ -65,13 +91,8 @@ Automates the release process:
 
 ### Other Scripts
 
-#### `generate_udev_rules.py`
-Generates udev rules for detected liquidctl devices.
-
 #### `install_udev_rules.sh`
-Installs udev rules and configures permissions.
-
-#### `fix-hwmon-permissions.sh`
+Installs udev rules and configures permissions for liquidctl devices and hwmon fan control.
 Fixes hwmon node permissions for current session.
 
 ## GitHub Actions

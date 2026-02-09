@@ -77,6 +77,16 @@ class LiquidctlCore:
         if self.using_api:
             return self._find_devices_api()
         return self._find_devices_cli()
+    
+    def get_device_sysfs_paths(self) -> List[str]:
+        """
+        Get sysfs device paths for all discovered liquidctl devices.
+        Used to exclude these from hwmon detection (prefer liquidctl API).
+        Returns empty list if using CLI mode.
+        """
+        if self.using_api and self._api:
+            return self._api.get_device_sysfs_paths()
+        return []
 
     def _find_devices_api(self) -> List[DeviceInfo]:
         """Find devices using Python API."""

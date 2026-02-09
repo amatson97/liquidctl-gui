@@ -8,45 +8,45 @@ This guide explains how to manage contributions via pull requests and create rel
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    Contributor's Fork                        │
-│  1. Fork repo                                                │
-│  2. git clone https://github.com/CONTRIBUTOR/liquidctl-gui   │
-│  3. git checkout -b feature/my-feature                       │
-│  4. Make changes                                             │
-│  5. git push origin feature/my-feature                       │
-│  6. Open Pull Request                                        │
+│                    Contributor's Fork                       │
+│  1. Fork repo                                               │
+│  2. git clone https://github.com/CONTRIBUTOR/liquidctl-gui  │
+│  3. git checkout -b feature/my-feature                      │
+│  4. Make changes                                            │
+│  5. git push origin feature/my-feature                      │
+│  6. Open Pull Request                                       │
 └─────────────────────────────────────────────────────────────┘
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────┐
-│                   Maintainer Review                          │
-│  1. Review PR on GitHub                                      │
-│  2. Request changes or approve                               │
-│  3. Merge to main (via GitHub UI)                            │
+│                   Maintainer Review                         │
+│  1. Review PR on GitHub                                     │
+│  2. Request changes or approve                              │
+│  3. Merge to main (via GitHub UI)                           │
 └─────────────────────────────────────────────────────────────┘
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────┐
-│                    Local Repository                          │
-│  git checkout main                                           │
-│  git pull origin main      # Pull merged PR                  │
+│                    Local Repository                         │
+│  git checkout main                                          │
+│  git pull origin main      # Pull merged PR                 │
 └─────────────────────────────────────────────────────────────┘
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────┐
-│                 Prepare for Release (Maintainer)             │
-│  1. Update CHANGELOG.md with merged PRs                      │
-│  2. ./scripts/pre-release-check.sh                           │
-│  3. ./scripts/prepare-release.sh                             │
-│  4. git push origin main && git push origin v0.X.Y           │
+│                 Prepare for Release (Maintainer)            │
+│  1. Update CHANGELOG.md with merged PRs                     │
+│  2. ./scripts/pre-release-check.sh                          │
+│  3. ./scripts/prepare-release.sh                            │
+│  4. git push origin main && git push origin v0.X.Y          │
 └─────────────────────────────────────────────────────────────┘
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────┐
-│                    GitHub Actions (Automatic)                │
-│  - Automatically creates GitHub Release                      │
-│  - Attaches CHANGELOG.md                                     │
-│  - Tags the release                                          │
+│                    GitHub Actions (Automatic)               │
+│  - Automatically creates GitHub Release                     │
+│  - Attaches CHANGELOG.md                                    │
+│  - Tags the release                                         │
 └─────────────────────────────────────────────────────────────┘
 ```
 

@@ -1,6 +1,11 @@
 # Setup and Hardware Access
 
-Some operations (writing PWM or hwmon controls) require access to kernel sysfs nodes such as `/sys/class/hidraw/.../hwmon/...` which are owned by root. Running the GUI as root is not recommended. Instead prefer one of these options:
+This application controls two types of devices:
+
+1. **USB devices** (NZXT Kraken, Corsair Commander, etc.) - via liquidctl
+2. **Motherboard PWM fans** - directly via Linux hwmon subsystem
+
+Some operations (writing PWM or hwmon controls) require access to kernel sysfs nodes such as `/sys/class/hidraw/.../hwmon/...` and `/sys/class/hwmon/...` which are owned by root. Running the GUI as root is not recommended. Instead prefer one of these options:
 
 - Install udev rules so your user can access the device nodes without sudo
 - Add a dedicated group and assign device nodes to that group

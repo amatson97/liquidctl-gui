@@ -8,33 +8,45 @@ Ensure system GTK bindings (python3-gi, gir1.2-gtk-3.0) are provided by your dis
 
 import json
 import logging
+import re
 import shutil
+import subprocess
 from pathlib import Path
 
 from . import __version__
-from .lib.config import load_config, save_config
+from .lib.config import (
+    load_config, save_config, save_profile as save_profile_to_disk,
+    load_profile as load_profile_from_disk, list_profiles,
+    delete_profile, save_current_state, load_current_state
+)
 from .lib.config_helpers import ConfigHelpers
 from .lib.functions import DeviceInfo, LiquidctlCore
 from .lib.ui_helpers import UiHelpers
+from .lib.hwmon_api import HwmonDevice
+from .lib import sensors_api
+from .lib.backends import discover_devices, get_all_backends
+from .lib.device_controller import DeviceController
+from .lib.profile_manager import ProfileManager
 
 
 APP_TITLE = f"Liquidctl Controller v{__version__}"
 APP_ID = "com.liquidctl.gui"
-WINDOW_WIDTH = 900
-WINDOW_HEIGHT = 680
+WINDOW_WIDTH = 820
+WINDOW_HEIGHT = 1010
 STATUS_TEXT_HEIGHT = 220
-AUTO_REFRESH_SECONDS = 5
+PANED_POSITION = 569  # Default split position between controls and status panel
+AUTO_REFRESH_SECONDS = 3  # Status monitoring interval (temps/speeds)
 DEFAULT_SPEED = 60
 PROFILE_DEFAULT_NAME = "profile.json"
 
+# User-configurable defaults (fully dynamic, no device-specific hardcoding)
 DEFAULT_CONFIG = {
     "window": {
         "width": WINDOW_WIDTH,
-        "height": WINDOW_HEIGHT
+        "height": WINDOW_HEIGHT,
+        "paned_position": PANED_POSITION
     },
     "status_text_height": STATUS_TEXT_HEIGHT,
-    "auto_refresh_seconds": AUTO_REFRESH_SECONDS,
-    "auto_refresh_enabled": True,
     "auto_initialize_on_startup": True,
     "default_speed": DEFAULT_SPEED,
     "speed_presets": [40, 60, 80, 100],
@@ -45,20 +57,7 @@ DEFAULT_CONFIG = {
         {"label": "Red", "value": "#dc143c"},
         {"label": "Purple", "value": "#8a2be2"}
     ],
-    "default_modes": {
-        "gigabyte": "fixed",
-        "kraken": "fixed"
-    },
-    "modes": {
-        "kraken": ["fixed", "breathing", "pulse", "fading", "spectrum-wave", "off"],
-        "gigabyte": ["fixed", "pulse", "flash", "double-flash", "color-cycle", "off"]
-    },
-    "modes_with_color": ["breathing", "pulse", "fading", "flash", "double-flash"],
-    "match_rules": [
-        {"contains": "Gigabyte RGB Fusion", "match": "Gigabyte RGB Fusion", "type": "gigabyte"},
-        {"contains": "Kraken", "match": "kraken", "type": "kraken"}
-    ],
-    "devices": []
+    "devices": []  # Populated by dynamic device discovery
 }
 
 
@@ -82,15 +81,28 @@ class DevicePlugin:
         raise NotImplementedError
 
     def refresh_status(self):
+        # Safety check: don't access buffer if it's None or window is destroyed
         if not self.status_buffer:
             return
-        status, _ = self.app.core.get_status(self.device.match)
-        self.status_buffer.set_text(status or "No status available")
+        try:
+            status, _ = self.app.core.get_status(self.device.match)
+            if status:
+                # Format numbers to 1 decimal place
+                status = re.sub(r'(\d+\.\d{2,})', lambda m: f"{float(m.group(1)):.1f}", status)
+            self.status_buffer.set_text(status or "No status available")
+        except Exception:
+            # Silently ignore errors (window may be closing)
+            pass
 
     def initialize(self):
         result, err = self.app.core.initialize(self.device.match)
         if err:
-            self.app.show_error(err)
+            # Gracefully skip unavailable devices during auto-init
+            if "not found" in err.lower():
+                self.app._logger.debug("Skipping initialization of unavailable device: %s", self.device.name)
+                self.app.status_label.set_text(f"Device {self.device.name} not available")
+            else:
+                self.app.show_error(err)
         else:
             self.app.status_label.set_text(f"Initialized {self.device.name}")
 
@@ -138,80 +150,122 @@ class DynamicDevicePlugin(DevicePlugin):
         self.app.add_separator(container)
 
     def refresh_status(self):
+        # Safety check: don't access buffer if it's None or window is destroyed
         if not self.status_buffer:
             return
-        status, _ = self.app.core.get_status(self.device.match)
-        if status:
-            self.status_buffer.set_text(status)
-        elif self.device.supports_lighting and not self.device.supports_cooling:
-            self.status_buffer.set_text("Lighting only (no status reported by device)")
-        else:
-            self.status_buffer.set_text("No status available")
+        try:
+            status, _ = self.app.core.get_status(self.device.match)
+            if status:
+                # Format numbers to 1 decimal place
+                status = re.sub(r'(\d+\.\d{2,})', lambda m: f"{float(m.group(1)):.1f}", status)
+                self.status_buffer.set_text(status)
+            elif self.device.supports_lighting and not self.device.supports_cooling:
+                self.status_buffer.set_text("Lighting only (no status reported by device)")
+            else:
+                self.status_buffer.set_text("No status available")
+        except Exception:
+            # Silently ignore errors (window may be closing)
+            pass
+
+
+class HwmonDevicePlugin(DevicePlugin):
+    """Plugin for motherboard PWM fan control via hwmon."""
+    
+    def build_ui(self, container):
+        device = self.device
+        
+        # Import here to avoid circular dependency
+        from .lib.hwmon_api import get_speed_channels, get_speed_channel_labels
+        
+        # Add warning about motherboard fan control
+        warning_label = self.app.add_section_label(
+            container,
+            "⚠️ Motherboard PWM Control - Minimum 20% enforced for safety"
+        )
+        warning_label.set_markup(
+            '<span foreground="#ff6600" weight="bold">⚠️ Motherboard PWM Control</span>\n'
+            '<span foreground="#666666" size="small">Minimum 20% duty cycle enforced for safety</span>'
+        )
+        
+        # Get PWM channels from the hwmon device
+        channels = get_speed_channels(device)
+        channel_labels = get_speed_channel_labels(device)
+        
+        if not channels:
+            self.app.add_section_label(container, "No PWM outputs detected")
+            self.app.add_separator(container)
+            return
+        
+        # Create a speed frame for each PWM channel
+        for channel in channels:
+            label = channel_labels.get(channel, channel)
+            speed_frame = self.app.add_frame(container, f"{label} Speed (%)")
+            
+            # Get saved speed or default to 60%
+            saved_speed = self.app.get_saved_speed(device.match, channel)
+            scale = self.app.add_scale(speed_frame, 0, 100, saved_speed)
+            
+            # Preset buttons
+            preset_row = self.app.add_row(speed_frame)
+            self.app.add_label(preset_row, "Presets:")
+            for preset in self.app.get_speed_presets():
+                self.app.add_button(
+                    preset_row,
+                    f"{preset}%",
+                    lambda p=preset, ch=channel, s=scale: self.app.apply_speed_preset(device.match, ch, p, s)
+                )
+            
+            # Apply button
+            action_row = self.app.add_row(speed_frame)
+            self.app.add_button(
+                action_row,
+                f"Apply {label}",
+                lambda ch=channel, s=scale: self.app.apply_hwmon_speed(device.match, ch, int(s.get_value()))
+            )
+        
+        self.app.add_separator(container)
+    
+    def refresh_status(self):
+        """Refresh fan speeds and temperatures from hwmon."""
+        if not self.status_buffer:
+            return
+        try:
+            # Get status directly from hwmon device
+            status_lines = []
+            status_data = self.device.get_status()
+            
+            for metric, value, unit in status_data:
+                status_lines.append(f"{metric:20s} {value:>6s} {unit}")
+            
+            if status_lines:
+                self.status_buffer.set_text("\n".join(status_lines))
+            else:
+                self.status_buffer.set_text("No status available")
+        except Exception as e:
+            # Log but don't crash
+            logger = logging.getLogger(__name__)
+            logger.debug("Error refreshing hwmon status: %s", e)
+    
+    def initialize(self):
+        """Initialize hwmon device by enabling manual PWM control."""
+        try:
+            results = self.device.initialize()
+            if results:
+                status_lines = [f"{msg}: {val} {unit}" for msg, val, unit in results]
+                self.app.status_label.set_text("; ".join(status_lines))
+            else:
+                self.app.status_label.set_text(f"Initialized {self.device.name}")
+        except Exception as e:
+            logger = logging.getLogger(__name__)
+            logger.exception("Failed to initialize hwmon device")
+            self.app.show_error(f"Failed to initialize {self.device.name}: {str(e)}")
 
 
 class GenericStatusPlugin(DevicePlugin):
+    """Fallback plugin for devices without discoverable capabilities."""
     def build_ui(self, container):
         self.app.add_section_label(container, self.device.name)
         self.app.add_section_label(container, "No controls available for this device type.")
-        self.app.add_separator(container)
-
-
-class GigabyteRGBFusionPlugin(DevicePlugin):
-    def build_ui(self, container):
-        self.app.build_color_controls(
-            container=container,
-            section_label="LED Color (Sync):",
-            device_match=self.device.match,
-            channel="sync",
-            mode_label="Mode (Sync):",
-            device_type="gigabyte"
-        )
-
-        self.app.add_button(container, "LED4 Off (Power LED)", lambda: self.app.apply_mode_value(self.device.match, "led4", "off"))
-
-        self.app.add_separator(container)
-
-    def refresh_status(self):
-        if not self.status_buffer:
-            return
-        status, _ = self.app.core.get_status(self.device.match)
-        self.status_buffer.set_text(status or "Lighting only (no status reported by device)")
-
-
-class KrakenXPlugin(DevicePlugin):
-    """Plugin for NZXT Kraken X (X53/X63/X73) devices.
-    
-    Note: Kraken X only supports pump speed control. Radiator fans are 
-    PWM-controlled by the motherboard, not the AIO unit.
-    """
-    def __init__(self, app, device_info):
-        super().__init__(app, device_info)
-        self.speed_scale = None
-
-    def build_ui(self, container):
-        self.app.build_color_controls(
-            container=container,
-            section_label="Logo LED:",
-            device_match=self.device.match,
-            channel="logo",
-            mode_label="Mode (Logo):",
-            device_type="kraken"
-        )
-
-        self.app.build_color_controls(
-            container=container,
-            section_label="Ring LED:",
-            device_match=self.device.match,
-            channel="ring",
-            mode_label="Mode (Ring):",
-            device_type="kraken"
-        )
-
-        # Kraken X only supports pump speed - fans are motherboard PWM
-        speed_frame = self.app.add_frame(container, "Pump Speed (%)")
-        self.speed_scale = self.app.add_scale(speed_frame, 0, 100, self.app.get_saved_speed(self.device.match, "pump"))
-        self.app.build_speed_controls(speed_frame, self.device.match, self.speed_scale, channels=["pump"])
-
         self.app.add_separator(container)
 
 
@@ -224,8 +278,13 @@ if GTK_AVAILABLE:
             window_cfg = self.config.get("window", {})
             width = window_cfg.get("width", WINDOW_WIDTH)
             height = window_cfg.get("height", WINDOW_HEIGHT)
-            self.set_size_request(width, height)
+            self.set_default_size(width, height)
             self.set_resizable(True)
+            self._last_saved_window = (width, height)
+            self._last_saved_paned = window_cfg.get("paned_position", PANED_POSITION)
+            self._pending_window_state = None
+            self._window_state_save_id = None
+            self._window_initialized = False
 
             logging.basicConfig(
                 level=logging.DEBUG,
@@ -248,13 +307,27 @@ if GTK_AVAILABLE:
             self.plugins = {}
             self.selected_device = None
             self.refresh_id = None
-            self.auto_refresh_enabled = bool(self.config.get("auto_refresh_enabled", True))
 
             self.last_colors = {}
             self.last_modes = {}
             self.last_speeds = {}
+            
+            # Profile state tracking
+            self.active_profile_name = None
+            self.profile_modified = False
+            
+            # Initialize device controller and profile manager
+            self.device_controller = DeviceController(self)
+            self.profile_manager = ProfileManager(self)
 
             self._build_ui()
+            # Connect cleanup handler
+            self.connect("destroy", self._on_window_destroy)
+            self.connect("configure-event", self._on_window_configure)
+            # Start refresh cycle only after window is realized
+            self.connect("realize", self._on_window_realize)
+            # Mark window as initialized after it's shown
+            self.connect("map-event", self._on_window_mapped)
             self.check_dependencies()
             if self.config_error:
                 self.show_error(f"Failed to load config. Using defaults. Details: {self.config_error}")
@@ -264,23 +337,28 @@ if GTK_AVAILABLE:
             else:
                 self.detect_devices()
 
-            # Auto-load a profile if present in the user's config directory or project root.
-            user_profile = Path.home() / ".liquidctl-gui" / "example.json"
-            project_profile = Path(__file__).resolve().parents[2] / "example.json"
-            profile_loaded = False
-            if user_profile.exists():
-                ok, msg = self.load_profile_from_path(user_profile)
-                profile_loaded = ok
-                if not ok:
-                    self._logger.info("Could not auto-load profile from %s: %s", user_profile, msg)
-            elif project_profile.exists():
-                ok, msg = self.load_profile_from_path(project_profile)
-                profile_loaded = ok
-                if not ok:
-                    self._logger.info("Could not auto-load profile from %s: %s", project_profile, msg)
+            # Auto-load profile: restore previous session state
+            current_state, profile_name = load_current_state()
+            if current_state:
+                self.profile_manager.apply_profile_data(current_state)
+                # Restore the active profile name
+                self.active_profile_name = profile_name
+                self.profile_modified = False
+                if profile_name:
+                    self._logger.info("✓ Restored profile: %s", profile_name)
+                else:
+                    self._logger.info("✓ Restored previous session state")
+                # Update display now that UI is built
+                GLib.idle_add(self.profile_manager._update_profile_display)
 
-            if profile_loaded:
-                self.show_info("Profile auto-loaded from disk.")
+            # Refresh UI to show loaded profile settings
+            self._refresh_ui()
+            # Note: refresh_status() is called in _on_window_realize() after window is shown
+
+        def _on_window_realize(self, widget):
+            """Called when window is realized and ready for display updates."""
+            self._logger.debug("Window realized, starting auto-refresh cycle")
+            # Now it's safe to start the refresh timer
             self.refresh_status()
 
         def _build_ui(self):
@@ -288,25 +366,49 @@ if GTK_AVAILABLE:
             root_box.set_border_width(8)
             self.add(root_box)
 
-            control_frame = Gtk.Frame(label="Controls")
-            root_box.pack_start(control_frame, False, False, 0)
-            controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-            controls.set_border_width(6)
-            control_frame.add(controls)
+            # Menu bar
+            menubar = Gtk.MenuBar()
+            root_box.pack_start(menubar, False, False, 0)
 
-            self.add_button(controls, "Detect Devices", self.detect_devices)
-            self.add_button(controls, "Initialize Selected", self.initialize_selected)
-            self.add_button(controls, "Initialize All", self.initialize_all)
-            self.add_button(controls, "Refresh Now", self.refresh_status)
+            # File menu
+            file_menu = Gtk.Menu()
+            file_item = Gtk.MenuItem(label="File")
+            file_item.set_submenu(file_menu)
+            menubar.append(file_item)
 
-            self.auto_refresh_check = Gtk.CheckButton(label="Auto-refresh")
-            self.auto_refresh_check.set_active(self.auto_refresh_enabled)
-            self.auto_refresh_check.connect("toggled", self.toggle_auto_refresh)
-            controls.pack_start(self.auto_refresh_check, False, False, 0)
+            save_item = Gtk.MenuItem(label="Save Profile...")
+            save_item.connect("activate", lambda *_: self.save_profile())
+            file_menu.append(save_item)
 
-            self.add_button(controls, "Save Profile", self.save_profile)
-            self.add_button(controls, "Load Profile", self.load_profile)
-            self.add_button(controls, "Settings", self.show_settings)
+            load_item = Gtk.MenuItem(label="Load Profile...")
+            load_item.connect("activate", lambda *_: self.load_profile())
+            file_menu.append(load_item)
+
+            # Devices menu
+            devices_menu = Gtk.Menu()
+            devices_item = Gtk.MenuItem(label="Devices")
+            devices_item.set_submenu(devices_menu)
+            menubar.append(devices_item)
+
+            detect_item = Gtk.MenuItem(label="Detect Devices")
+            detect_item.connect("activate", lambda *_: self.detect_devices())
+            devices_menu.append(detect_item)
+
+            init_all_item = Gtk.MenuItem(label="Initialize All")
+            init_all_item.connect("activate", lambda *_: self.initialize_all())
+            devices_menu.append(init_all_item)
+
+            # Help menu
+            help_menu = Gtk.Menu()
+            help_item = Gtk.MenuItem(label="Help")
+            help_item.set_submenu(help_menu)
+            menubar.append(help_item)
+
+            about_item = Gtk.MenuItem(label="About")
+            about_item.connect("activate", lambda *_: self.show_about())
+            help_menu.append(about_item)
+
+            # Status row (no controls bar needed anymore)
 
             status_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
             status_row.set_border_width(2)
@@ -315,6 +417,12 @@ if GTK_AVAILABLE:
             self.status_label = Gtk.Label(label="Ready")
             self.status_label.set_xalign(0.0)
             status_row.pack_start(self.status_label, True, True, 0)
+            
+            # Profile indicator
+            self.profile_label = Gtk.Label(label="No profile loaded")
+            self.profile_label.set_xalign(1.0)
+            self.profile_label.set_margin_start(10)
+            status_row.pack_start(self.profile_label, False, False, 0)
 
             main_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
             main_box.set_hexpand(True)
@@ -323,13 +431,20 @@ if GTK_AVAILABLE:
 
             device_frame = Gtk.Frame(label="Devices")
             device_frame.set_vexpand(True)
+            device_frame.set_size_request(200, -1)  # Fixed width of 200px, auto height
             main_box.pack_start(device_frame, False, False, 0)
+
+            # Add scrolling for device list in case of many devices
+            device_scroll = Gtk.ScrolledWindow()
+            device_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+            device_scroll.set_vexpand(True)
+            device_frame.add(device_scroll)
 
             self.device_list = Gtk.ListBox()
             self.device_list.set_selection_mode(Gtk.SelectionMode.SINGLE)
             self.device_list.connect("row-selected", self.on_device_selected)
-            device_frame.add(self.device_list)
-            self.device_list.set_vexpand(True)
+            self.device_list.connect("button-press-event", self.on_device_list_button_press)
+            device_scroll.add(self.device_list)
 
             detail_scroll = Gtk.ScrolledWindow()
             detail_scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
@@ -339,6 +454,8 @@ if GTK_AVAILABLE:
             detail_paned.set_hexpand(True)
             detail_paned.set_vexpand(True)
             main_box.pack_start(detail_paned, True, True, 0)
+            self.detail_paned = detail_paned
+            detail_paned.connect("notify::position", self._on_paned_position_changed)
 
             self.detail_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
             self.detail_box.set_border_width(6)
@@ -351,9 +468,114 @@ if GTK_AVAILABLE:
             status_box.set_border_width(6)
             status_frame.add(status_box)
 
-            status_height = self.config.get("status_text_height", STATUS_TEXT_HEIGHT)
-            self.status_buffer = self.add_status_text(status_box, height=status_height)
-            detail_paned.pack2(status_frame, resize=False, shrink=False)
+            # Remove fixed height restriction - let it be fully responsive
+            status_min_height = self.get_config_int("status_text_height", STATUS_TEXT_HEIGHT)
+            self.status_text_view, self.status_buffer, self.status_scroller = self.add_status_text(
+                status_box,
+                height=status_min_height
+            )
+            detail_paned.pack2(status_frame, resize=True, shrink=True)  # Allow resizing
+            
+            # Set default paned position to match screenshot layout
+            paned_position = self.config.get("window", {}).get("paned_position", PANED_POSITION)
+            detail_paned.set_position(int(paned_position))
+
+        def _resize_status_panel_to_content(self):
+            if not getattr(self, "status_text_view", None):
+                return False
+            if not getattr(self, "status_scroller", None):
+                return False
+            if not getattr(self, "detail_paned", None):
+                return False
+            if not self.get_window():
+                return False
+
+            buffer = self.status_text_view.get_buffer()
+            start, end = buffer.get_bounds()
+            min_height = self.get_config_int("status_text_height", STATUS_TEXT_HEIGHT)
+
+            if start.equal(end):
+                self.status_scroller.set_min_content_height(min_height)
+                return False
+
+            rect = self.status_text_view.get_iter_location(end)
+            total_height = rect.y + rect.height
+            target_height = max(min_height, total_height + 24)
+
+            allocation = self.detail_paned.get_allocation()
+            if allocation.height <= 0:
+                return False
+
+            max_height = max(100, allocation.height - 100)
+            target_height = min(target_height, max_height)
+            self.status_scroller.set_min_content_height(int(target_height))
+            self.detail_paned.set_position(max(100, allocation.height - int(target_height)))
+            return False
+
+        def _save_window_state(self, width=None, height=None, paned_position=None):
+            window_cfg = self.config.setdefault("window", {})
+            if width is not None:
+                window_cfg["width"] = int(width)
+            if height is not None:
+                window_cfg["height"] = int(height)
+            if paned_position is not None:
+                window_cfg["paned_position"] = int(paned_position)
+            save_config(self.config)
+
+        def _schedule_window_state_save(self, width=None, height=None, paned_position=None):
+            if self._pending_window_state is None:
+                self._pending_window_state = {}
+            if width is not None:
+                self._pending_window_state["width"] = int(width)
+            if height is not None:
+                self._pending_window_state["height"] = int(height)
+            if paned_position is not None:
+                self._pending_window_state["paned_position"] = int(paned_position)
+
+            if self._window_state_save_id is not None:
+                GLib.source_remove(self._window_state_save_id)
+
+            self._window_state_save_id = GLib.timeout_add(200, self._flush_window_state_save)
+
+        def _flush_window_state_save(self):
+            if not self._pending_window_state:
+                self._window_state_save_id = None
+                return False
+            self._save_window_state(**self._pending_window_state)
+            self._pending_window_state = None
+            self._window_state_save_id = None
+            return False
+
+        def _on_window_configure(self, widget, event):
+            # Ignore configure events until window is fully initialized
+            if not self._window_initialized:
+                return False
+            
+            # Use get_size() instead of event dimensions for accuracy
+            width, height = self.get_size()
+            
+            # Only save if change is significant (>5px threshold to avoid window manager drift)
+            last_w, last_h = self._last_saved_window
+            if abs(width - last_w) <= 5 and abs(height - last_h) <= 5:
+                return False
+            
+            self._last_saved_window = (width, height)
+            self._schedule_window_state_save(width=width, height=height)
+            return False
+
+        def _on_paned_position_changed(self, paned, _param):
+            if not self._window_initialized:
+                return
+            position = paned.get_position()
+            if position == self._last_saved_paned:
+                return
+            self._last_saved_paned = position
+            self._schedule_window_state_save(paned_position=position)
+        
+        def _on_window_mapped(self, widget, event):
+            # Window is now fully shown and positioned, safe to track changes
+            self._window_initialized = True
+            return False
 
         def load_devices_from_config(self):
             """Load devices from config and populate with fresh capabilities from discovery."""
@@ -371,13 +593,17 @@ if GTK_AVAILABLE:
 
             # Discover actual devices to get current capabilities
             self._logger.info("Loading %d device(s) from config and refreshing capabilities", len(devices_cfg))
-            try:
-                discovered = self.core.find_devices()
-                discovered_map = {d.match: d for d in discovered}
-                self._logger.debug("Discovered %d device(s)", len(discovered))
-            except Exception:
-                self._logger.exception("Failed to discover devices, using config data only")
-                discovered_map = {}
+            
+            # Use backend system for discovery (automatic deduplication)
+            backend_results = discover_devices()
+            discovered_map = {}
+            
+            # Build map of all discovered devices by their match identifier
+            for backend_class, devices in backend_results:
+                for device in devices:
+                    match_key = getattr(device, 'match', getattr(device, 'name', None))
+                    if match_key:
+                        discovered_map[match_key] = device
 
             # Match config entries with discovered devices and merge capabilities
             for entry in devices_cfg:
@@ -387,31 +613,36 @@ if GTK_AVAILABLE:
                 match = entry.get("match", name)
                 device_type = entry.get("type", "generic")
                 
-                # If device was discovered, use its full capabilities
-                if match in discovered_map:
-                    device = discovered_map[match]
-                    # Preserve the configured type if set
-                    if device_type != "generic":
+                # Try to find device in discovered map
+                device = discovered_map.get(match)
+                
+                # For hwmon devices, also try matching by chip_name if exact match fails
+                if not device and device_type == "hwmon":
+                    chip_name = entry.get("chip_name")
+                    if chip_name:
+                        # Try to find by chip name
+                        for dev_match, dev in discovered_map.items():
+                            if isinstance(dev, HwmonDevice) and dev.chip_name == chip_name:
+                                device = dev
+                                self._logger.debug("Matched hwmon device %s by chip_name=%s", name, chip_name)
+                                break
+                
+                if device:
+                    self._logger.debug("Loaded device %s from backend", name)
+                    # Preserve configured type if set
+                    if device_type != "generic" and hasattr(device, 'device_type'):
                         device.device_type = device_type
-                    self._logger.debug("Loaded %s with capabilities from discovery", name)
                 else:
-                    # Device not found, create from config with saved capabilities if available
-                    device = DeviceInfo(
-                        name=name,
-                        match=match,
-                        device_type=device_type,
-                        color_channels=entry.get("color_channels", []),
-                        speed_channels=entry.get("speed_channels", []),
-                        color_modes=entry.get("color_modes", []),
-                        supports_lighting=entry.get("supports_lighting", False),
-                        supports_cooling=entry.get("supports_cooling", False),
-                    )
-                    self._logger.warning("Device %s not discovered, using saved config", name)
+                    # Device not found, skip it (don't create ghost devices)
+                    self._logger.info("Device %s not discovered, skipping", name)
+                    continue
                 
                 self.devices.append(device)
                 row = Gtk.ListBoxRow()
                 row.device = device
-                row.add(Gtk.Label(label=device.name, xalign=0))
+                # Use description for hwmon devices, name for others
+                display_name = device.description if isinstance(device, HwmonDevice) else device.name
+                row.add(Gtk.Label(label=display_name, xalign=0))
                 self.device_list.add(row)
                 self.plugins[device.name] = self.plugin_for_device(device)
 
@@ -422,24 +653,36 @@ if GTK_AVAILABLE:
                 self.update_config_devices()
                 # Auto-initialize if enabled
                 if self.config.get("auto_initialize_on_startup", True):
-                    self._logger.info("Auto-initializing devices on startup")
-                    GLib.timeout_add(500, self._auto_initialize_devices)
+                    self._logger.info("Auto-initialize scheduled")
+                    # Delay initialization significantly to ensure window is fully stable (2 seconds)
+                    GLib.timeout_add(2000, self._auto_initialize_devices)
 
         def update_config_devices(self):
             """Save devices to config with full capabilities."""
-            self.config["devices"] = [
-                {
-                    "name": device.name,
-                    "match": device.match,
-                    "type": device.device_type,
-                    "color_channels": device.color_channels,
-                    "speed_channels": device.speed_channels,
-                    "color_modes": device.color_modes,
-                    "supports_lighting": device.supports_lighting,
-                    "supports_cooling": device.supports_cooling,
-                }
-                for device in self.devices
-            ]
+            self.config["devices"] = []
+            for device in self.devices:
+                if isinstance(device, HwmonDevice):
+                    # Save hwmon device info (will be re-detected on load)
+                    self.config["devices"].append({
+                        "name": device.name,
+                        "match": device.match,
+                        "type": "hwmon",
+                        "chip_name": device.chip_name,
+                        "supports_cooling": True,
+                        "supports_lighting": False,
+                    })
+                else:
+                    # Save liquidctl device info
+                    self.config["devices"].append({
+                        "name": device.name,
+                        "match": device.match,
+                        "type": device.device_type,
+                        "color_channels": device.color_channels,
+                        "speed_channels": device.speed_channels,
+                        "color_modes": device.color_modes,
+                        "supports_lighting": device.supports_lighting,
+                        "supports_cooling": device.supports_cooling,
+                    })
             save_config(self.config)
 
         def run_command(self, cmd):
@@ -447,14 +690,33 @@ if GTK_AVAILABLE:
 
         def detect_devices(self):
             self._logger.info("[ACTION] Detect Devices clicked")
-            self._logger.info("Scanning for liquidctl-compatible devices...")
-            self.devices = self.core.find_devices()
-            self._logger.info("Found %d device(s)", len(self.devices))
-            for d in self.devices:
-                self._logger.info("  Device: %s", d.name)
-                self._logger.debug("    Color channels: %s", d.color_channels)
-                self._logger.debug("    Speed channels: %s", d.speed_channels)
-                self._logger.debug("    Color modes: %s", d.color_modes[:5] if len(d.color_modes) > 5 else d.color_modes)
+            
+            # Discover devices from all backends (automatic deduplication by priority)
+            backend_results = discover_devices()
+            
+            # Log discovered backends
+            for backend_class in get_all_backends():
+                caps = backend_class.get_capabilities()
+                self._logger.info("Backend available: %s (priority: %d)", caps.name, caps.priority)
+            
+            # Flatten devices from all backends
+            self.devices = []
+            for backend_class, devices in backend_results:
+                caps = backend_class.get_capabilities()
+                self._logger.info("Backend %s found %d device(s)", caps.name, len(devices))
+                for device in devices:
+                    if isinstance(device, HwmonDevice):
+                        self._logger.info("  Hwmon: %s", device.description)
+                        self._logger.debug("    PWM channels: %s", list(device.pwm_channels.keys()))
+                    else:
+                        self._logger.info("  Device: %s", device.name)
+                        self._logger.debug("    Color channels: %s", device.color_channels)
+                        self._logger.debug("    Speed channels: %s", device.speed_channels)
+                        self._logger.debug("    Color modes: %s", device.color_modes[:5] if len(device.color_modes) > 5 else device.color_modes)
+                self.devices.extend(devices)
+            
+            self._logger.info("Total devices: %d", len(self.devices))
+            
             self.plugins.clear()
 
             for child in self.device_list.get_children():
@@ -472,7 +734,9 @@ if GTK_AVAILABLE:
             for device in self.devices:
                 row = Gtk.ListBoxRow()
                 row.device = device
-                row.add(Gtk.Label(label=device.name, xalign=0))
+                # Use description for hwmon devices, name for others
+                display_name = device.description if isinstance(device, HwmonDevice) else device.name
+                row.add(Gtk.Label(label=display_name, xalign=0))
                 self.device_list.add(row)
                 self.plugins[device.name] = self.plugin_for_device(device)
 
@@ -481,18 +745,16 @@ if GTK_AVAILABLE:
             self.update_config_devices()
 
         def plugin_for_device(self, device):
-            # If device has discovered capabilities, use dynamic plugin
-            if device.color_channels or device.speed_channels:
+            """Select plugin based on discovered device capabilities (fully dynamic)."""
+            # Check if this is a hwmon device
+            if isinstance(device, HwmonDevice):
+                self._logger.debug("Using HwmonDevicePlugin for %s", device.name)
+                return HwmonDevicePlugin(self, device)
+            elif device.color_channels or device.speed_channels:
                 self._logger.debug("Using DynamicDevicePlugin for %s", device.name)
                 return DynamicDevicePlugin(self, device)
-            # Legacy fallback for devices loaded from config without capabilities
-            if device.device_type == "gigabyte" or "Gigabyte RGB Fusion" in device.name:
-                self._logger.debug("Using GigabyteRGBFusionPlugin for %s", device.name)
-                return GigabyteRGBFusionPlugin(self, device)
-            if device.device_type == "kraken" or "Kraken" in device.name:
-                self._logger.debug("Using KrakenXPlugin for %s", device.name)
-                return KrakenXPlugin(self, device)
-            self._logger.debug("Using GenericStatusPlugin for %s", device.name)
+            # Fallback for devices without discoverable capabilities
+            self._logger.debug("Using GenericStatusPlugin for %s (no capabilities discovered)", device.name)
             return GenericStatusPlugin(self, device)
 
         def show_empty_state(self):
@@ -517,7 +779,39 @@ if GTK_AVAILABLE:
 
             plugin.build_ui(self.detail_box)
             self.detail_box.show_all()
-            plugin.refresh_status()
+            # Status panel now shows all devices, no need to refresh individual device
+
+        def on_device_list_button_press(self, widget, event):
+            """Handle right-click on device list to show context menu."""
+            if event.type == Gdk.EventType.BUTTON_PRESS and event.button == 3:  # Right-click
+                # Get the row at the click position
+                row = self.device_list.get_row_at_y(int(event.y))
+                if row and hasattr(row, "device"):
+                    # Select the row
+                    self.device_list.select_row(row)
+                    # Show context menu
+                    self.show_device_context_menu(row.device, event)
+                return True
+            return False
+
+        def show_device_context_menu(self, device, event):
+            """Show context menu for device."""
+            menu = Gtk.Menu()
+            
+            init_item = Gtk.MenuItem(label=f"Initialize {device.name}")
+            init_item.connect("activate", lambda *_: self.initialize_device(device))
+            menu.append(init_item)
+            
+            menu.show_all()
+            menu.popup(None, None, None, None, event.button, event.time)
+
+        def initialize_device(self, device):
+            """Initialize a specific device."""
+            self._logger.info("[ACTION] Initialize device: %s", device.name)
+            plugin = self.plugins.get(device.name)
+            if plugin:
+                plugin.initialize()
+                self.status_label.set_text(f"Initialized {device.name}")
 
         def initialize_selected(self):
             if not self.selected_device:
@@ -547,245 +841,148 @@ if GTK_AVAILABLE:
             return ""
 
         def set_led_color(self, device_match, channel, color_hex):
-            success, err = self.core.set_color(device_match, channel, "fixed", color_hex)
-            return ("" if success else None, err)
+            return self.device_controller.set_led_color(device_match, channel, color_hex)
 
         def set_led_mode(self, device_match, channel, mode):
-            success, err = self.core.set_color(device_match, channel, mode, "")
-            return ("" if success else None, err)
+            return self.device_controller.set_led_mode(device_match, channel, mode)
 
         def set_led_mode_with_color(self, device_match, channel, mode, color_hex):
-            success, err = self.core.set_color(device_match, channel, mode, color_hex)
-            return ("" if success else None, err)
+            return self.device_controller.set_led_mode_with_color(device_match, channel, mode, color_hex)
 
         def set_speed(self, device_match, channel, speed):
-            success, err = self.core.set_speed(device_match, channel, speed)
-            return ("" if success else None, err)
+            return self.device_controller.set_speed(device_match, channel, speed)
 
         def refresh_status(self):
-            for name, plugin in self.plugins.items():
-                try:
-                    plugin.refresh_status()
-                except Exception:
-                    logging.exception("Refresh failed for %s", name)
+            # Safety check: don't refresh if window is destroyed
+            if not self.get_window():
+                return
+            
+            # Collect status from all devices with thermal/fan data
+            # Order: CPU → Coolers → GPU
+            all_status = []
+            
+            # 1. CPU/System sensors first (lm-sensors)
+            sensors_data = sensors_api.get_lm_sensors()
+            if sensors_data:
+                all_status.append(f"┌─ System Sensors (lm-sensors) ─\n{sensors_data}\n")
+            
+            # 2. Liquidctl cooling devices (Kraken, etc.)
+            for device in self.devices:
+                # Only show devices that support cooling (have thermal/fan data)
+                if device.supports_cooling:
+                    try:
+                        # Handle hwmon devices differently
+                        if isinstance(device, HwmonDevice):
+                            status_data = device.get_status()
+                            if status_data:
+                                status_lines = [f"{metric:20s} {value:>6s} {unit}" for metric, value, unit in status_data]
+                                status = "\n".join(status_lines)
+                                all_status.append(f"┌─ {device.description} ─\n{status}\n")
+                        else:
+                            # Regular liquidctl device
+                            status, _ = self.core.get_status(device.match)
+                            if status:
+                                # Format numbers to 1 decimal place
+                                status = re.sub(r'(\d+\.\d{2,})', lambda m: f"{float(m.group(1)):.1f}", status)
+                                all_status.append(f"┌─ {device.name} ─\n{status}\n")
+                    except Exception:
+                        logging.exception("Refresh failed for %s", device.name)
+            
+            # 3. GPU sensors last (NVIDIA/AMD)
+            gpu_data = sensors_api.get_gpu_info()
+            if gpu_data:
+                all_status.append(f"┌─ GPU Sensors ─\n{gpu_data}\n")
+            
+            # Update status buffer with all device info (join with blank line separator)
+            if all_status and self.status_buffer:
+                self.status_buffer.set_text("\n".join(all_status).rstrip())
+            elif self.status_buffer:
+                self.status_buffer.set_text("No devices with thermal/fan monitoring available")
 
-            if self.auto_refresh_enabled:
-                interval = self.get_config_int("auto_refresh_seconds", AUTO_REFRESH_SECONDS)
-                self.refresh_id = GLib.timeout_add_seconds(interval, self._refresh_status_timeout)
+            if self.status_buffer:
+                GLib.idle_add(self._resize_status_panel_to_content)
+
+            # Schedule next refresh for continuous monitoring (cancel any existing timer first)
+            if self.refresh_id:
+                GLib.source_remove(self.refresh_id)
+                self.refresh_id = None
+            self.refresh_id = GLib.timeout_add_seconds(AUTO_REFRESH_SECONDS, self._refresh_status_timeout)
+            self._logger.debug("Status refreshed, next refresh in %d seconds", AUTO_REFRESH_SECONDS)
+
+
 
         def _refresh_status_timeout(self):
+            # Safety check: don't refresh if window is destroyed
+            if not self.get_window():
+                return False
             self.refresh_status()
             return False
 
         def pick_color(self, device_match, channel):
-            self._logger.debug("[ACTION] Pick Color clicked for %s:%s", device_match, channel)
-            hex_color = self.choose_color("Pick Color")
-            if not hex_color:
-                self._logger.debug("[ACTION] Color picker cancelled")
-                return
-            self._logger.info("[ACTION] Setting color %s on %s:%s", hex_color, device_match, channel)
-            _, stderr = self.set_led_color(device_match, channel, hex_color)
-            friendly = self.core.friendly_error(stderr)
-            if friendly:
-                self.show_error(friendly)
-                return
-            self.last_colors[f"{device_match}:{channel}"] = hex_color
-            self.last_modes[f"{device_match}:{channel}"] = "fixed"
-            self.status_label.set_text(f"{channel} set to {hex_color}")
+            self.device_controller.pick_color(device_match, channel)
 
         def apply_preset_color(self, device_match, channel, color_hex):
-            self._logger.info("[ACTION] Preset color %s clicked for %s:%s", color_hex, device_match, channel)
-            _, stderr = self.set_led_color(device_match, channel, color_hex)
-            friendly = self.core.friendly_error(stderr)
-            if friendly:
-                self.show_error(friendly)
-                return
-            self.last_colors[f"{device_match}:{channel}"] = color_hex
-            self.last_modes[f"{device_match}:{channel}"] = "fixed"
-            self.status_label.set_text(f"{channel} set to {color_hex}")
-
-        def apply_mode(self, device_match, channel, combo):
-            mode = combo.get_active_text()
-            self._logger.info("[ACTION] Apply Mode '%s' clicked for %s:%s", mode, device_match, channel)
-            color_key = f"{device_match}:{channel}"
-            last_color = self.last_colors.get(color_key)
-
-            if mode == "fixed":
-                if not last_color:
-                    last_color = self.choose_color("Pick Color for Fixed Mode")
-                if not last_color:
-                    self.show_error("Pick a color first for fixed mode.")
-                    return
-                _, stderr = self.set_led_color(device_match, channel, last_color)
-            elif mode in self.get_modes_with_color():
-                if not last_color:
-                    last_color = self.choose_color(f"Pick Color for {mode}")
-                if not last_color:
-                    self.show_error("Pick a color first for this mode.")
-                    return
-                _, stderr = self.set_led_mode_with_color(device_match, channel, mode, last_color)
-            else:
-                _, stderr = self.set_led_mode(device_match, channel, mode)
-
-            friendly = self.core.friendly_error(stderr)
-            if friendly:
-                self.show_error(friendly)
-                return
-
-            if last_color:
-                self.last_colors[color_key] = last_color
-            self.last_modes[color_key] = mode
-            self.status_label.set_text(f"{channel} mode set to {mode}")
-
-        def apply_mode_value(self, device_match, channel, mode):
-            self._logger.info("[ACTION] Apply mode value '%s' for %s:%s", mode, device_match, channel)
-            _, stderr = self.set_led_mode(device_match, channel, mode)
-            friendly = self.core.friendly_error(stderr)
-            if friendly:
-                self.show_error(friendly)
-                return
-            self.last_modes[f"{device_match}:{channel}"] = mode
-            self.status_label.set_text(f"{channel} mode set to {mode}")
+            self.device_controller.apply_preset_color(device_match, channel, color_hex)
 
         def apply_mode_dynamic(self, device_match, channel, combo):
             """Apply mode using the new core API (for dynamic plugin)."""
-            mode = combo.get_active_text()
-            self._logger.info("[ACTION] Apply Dynamic Mode '%s' for %s:%s", mode, device_match, channel)
-            color_key = f"{device_match}:{channel}"
-            last_color = self.last_colors.get(color_key)
-
-            # Modes that typically need a color
-            modes_needing_color = {"fixed", "breathing", "pulse", "fading", "flash", "double-flash"}
-
-            if mode in modes_needing_color:
-                if not last_color:
-                    last_color = self.choose_color(f"Pick Color for {mode}")
-                if not last_color:
-                    self.show_error("Pick a color first for this mode.")
-                    return
-
-            success, err = self.core.set_color(device_match, channel, mode, last_color or "")
-            if not success:
-                self.show_error(self.core.friendly_error(err) or err)
-                return
-
-            if last_color:
-                self.last_colors[color_key] = last_color
-            self.last_modes[color_key] = mode
-            self.status_label.set_text(f"{channel} mode set to {mode}")
+            self.device_controller.apply_mode_dynamic(device_match, channel, combo)
 
         def apply_speed(self, device_match, channel, speed):
-            self._logger.info("[ACTION] Apply Speed %d%% for %s:%s", speed, device_match, channel)
-            _, stderr = self.set_speed(device_match, channel, speed)
-            friendly = self.core.friendly_error(stderr)
-            if friendly:
-                self.show_error(friendly)
-                return
-            self.last_speeds[f"{device_match}:{channel}"] = str(speed)
-            self.status_label.set_text(f"{channel} set to {speed}%")
+            self.device_controller.apply_speed(device_match, channel, speed)
 
         def apply_speed_preset(self, device_match, channel, speed, scale):
-            self._logger.info("[ACTION] Speed preset %d%% clicked for %s:%s", speed, device_match, channel)
-            _, stderr = self.set_speed(device_match, channel, speed)
-            friendly = self.core.friendly_error(stderr)
-            if friendly:
-                self.show_error(friendly)
-                return
-            scale.set_value(speed)
-            self.last_speeds[f"{device_match}:{channel}"] = str(speed)
-            self.status_label.set_text(f"{channel} set to {speed}%")
-
-        def toggle_auto_refresh(self, button):
-            self.auto_refresh_enabled = button.get_active()
-            self.config["auto_refresh_enabled"] = self.auto_refresh_enabled
-            save_config(self.config)
-            if not self.auto_refresh_enabled and self.refresh_id:
-                GLib.source_remove(self.refresh_id)
-                self.refresh_id = None
-            elif self.auto_refresh_enabled and not self.refresh_id:
-                self.refresh_status()
+            self.device_controller.apply_speed_preset(device_match, channel, speed, scale)
+        
+        def apply_hwmon_speed(self, device_match, channel, speed):
+            """Apply speed to hwmon (motherboard PWM) device."""
+            self.device_controller.apply_hwmon_speed(device_match, channel, speed)
 
         def save_profile(self):
-            profile = {
-                "colors": self.last_colors,
-                "modes": self.last_modes,
-                "speeds": self.last_speeds
-            }
-            path = self.choose_file("Save Profile", Gtk.FileChooserAction.SAVE, PROFILE_DEFAULT_NAME)
-            if not path:
-                return
-            try:
-                Path(path).write_text(json.dumps(profile, indent=2))
-                self.show_info("Profile saved successfully.")
-            except Exception as e:
-                self.show_error(str(e))
+            self.profile_manager.save_profile()
 
         def load_profile(self):
-            path = self.choose_file("Load Profile", Gtk.FileChooserAction.OPEN)
-            if not path:
-                return
-            try:
-                data = json.loads(Path(path).read_text())
-            except Exception as e:
-                self.show_error(str(e))
-                return
-
-            self.last_colors.update(data.get("colors", {}))
-            self.last_modes.update(data.get("modes", {}))
-            self.last_speeds.update(data.get("speeds", {}))
-
-            for key, color_hex in self.last_colors.items():
-                if not color_hex:
-                    continue
-                device, channel = key.split(":", 1)
-                self.set_led_color(device, channel, color_hex)
-
-            for key, mode in self.last_modes.items():
-                device, channel = key.split(":", 1)
-                self.set_led_mode(device, channel, mode)
-
-            for key, speed in self.last_speeds.items():
-                device, channel = key.split(":", 1)
-                self.set_speed(device, channel, speed)
-
-            self.show_info("Profile loaded and applied.")
+            """Show profile browser and load selected profile."""
+            self.profile_manager.load_profile()
 
         def load_profile_from_path(self, path):
             """Load and apply a profile JSON from a given filesystem path (non-interactive)."""
-            try:
-                data = json.loads(Path(path).read_text())
-            except Exception as e:
-                self._logger.warning("Failed to load profile %s: %s", path, e)
-                return False, str(e)
+            return self.profile_manager.load_profile_from_path(path)
 
-            self.last_colors.update(data.get("colors", {}))
-            self.last_modes.update(data.get("modes", {}))
-            self.last_speeds.update(data.get("speeds", {}))
+        def apply_profile_data(self, data):
+            """Apply profile data (colors, modes, speeds) to devices."""
+            self.profile_manager.apply_profile_data(data)
 
-            for key, color_hex in self.last_colors.items():
-                if not color_hex:
-                    continue
-                device, channel = key.split(":", 1)
-                try:
-                    self.set_led_color(device, channel, color_hex)
-                except Exception as e:
-                    self._logger.warning("Failed to apply color %s for %s: %s", color_hex, key, e)
 
-            for key, mode in self.last_modes.items():
-                device, channel = key.split(":", 1)
-                try:
-                    self.set_led_mode(device, channel, mode)
-                except Exception as e:
-                    self._logger.warning("Failed to apply mode %s for %s: %s", mode, key, e)
+        def _refresh_ui(self):
+            """Refresh the UI to reflect current state (after loading a profile)."""
+            # Safety check: don't refresh if window is destroyed
+            if not self.get_window():
+                return
+            
+            # Trigger UI rebuild by re-selecting the current device
+            if self.selected_device:
+                # Get the currently selected row
+                selected_row = self.device_list.get_selected_row()
+                if selected_row:
+                    # Re-trigger selection to rebuild UI
+                    self.on_device_selected(self.device_list, selected_row)
+            # Also refresh status
+            self.refresh_status()
+            # Update profile indicator
+            self._update_profile_display()
 
-            for key, speed in self.last_speeds.items():
-                device, channel = key.split(":", 1)
-                try:
-                    self.set_speed(device, channel, speed)
-                except Exception as e:
-                    self._logger.warning("Failed to apply speed %s for %s: %s", speed, key, e)
+        def _update_profile_display(self):
+            """Update the profile indicator label."""
+            self.profile_manager._update_profile_display()
 
-            return True, ""
+        def _mark_profile_modified(self):
+            """Mark the current profile as modified."""
+            self.profile_manager.mark_profile_modified()
+
+        def _auto_save_state(self):
+            """Automatically save current state for session restore."""
+            self.profile_manager.auto_save_state()
 
         def get_saved_speed(self, device_match, channel):
             fallback = str(self.get_config_int("default_speed", DEFAULT_SPEED))
@@ -830,54 +1027,191 @@ if GTK_AVAILABLE:
             dialog.run()
             dialog.destroy()
 
+        def show_about(self):
+            """Show custom About dialog."""
+            dialog = Gtk.Dialog(
+                title="About Liquidctl GUI",
+                transient_for=self,
+                modal=True,
+                destroy_with_parent=True
+            )
+            dialog.add_button(Gtk.STOCK_CLOSE, Gtk.ResponseType.CLOSE)
+            dialog.set_default_size(500, 400)
+            dialog.set_border_width(0)
+            
+            # Content box
+            content = dialog.get_content_area()
+            content.set_spacing(0)
+            
+            # Header with title and version
+            header_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+            header_box.set_margin_top(30)
+            header_box.set_margin_bottom(20)
+            header_box.set_margin_start(20)
+            header_box.set_margin_end(20)
+            
+            title_label = Gtk.Label()
+            title_label.set_markup('<span size="x-large" weight="bold">Liquidctl GUI</span>')
+            title_label.set_halign(Gtk.Align.CENTER)
+            header_box.pack_start(title_label, False, False, 0)
+            
+            version_label = Gtk.Label()
+            version_label.set_markup(f'<span size="large">v{__version__}</span>')
+            version_label.set_halign(Gtk.Align.CENTER)
+            header_box.pack_start(version_label, False, False, 0)
+            
+            content.pack_start(header_box, False, False, 0)
+            
+            # Separator
+            sep1 = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
+            content.pack_start(sep1, False, False, 0)
+            
+            # Description section
+            desc_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+            desc_box.set_margin_top(20)
+            desc_box.set_margin_bottom(20)
+            desc_box.set_margin_start(30)
+            desc_box.set_margin_end(30)
+            
+            desc_label = Gtk.Label()
+            desc_label.set_markup(
+                '<b>Native GTK control for liquidctl-compatible devices</b>\n\n'
+                '• Dynamic device discovery and configuration\n'
+                '• Live status monitoring with auto-refresh\n'
+                '• Profile management and presets\n'
+                '• RGB lighting and cooling control'
+            )
+            desc_label.set_line_wrap(True)
+            desc_label.set_halign(Gtk.Align.START)
+            desc_box.pack_start(desc_label, False, False, 0)
+            
+            content.pack_start(desc_box, False, False, 0)
+            
+            # Separator
+            sep2 = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
+            content.pack_start(sep2, False, False, 0)
+            
+            # Credits and links section
+            credits_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+            credits_box.set_margin_top(20)
+            credits_box.set_margin_bottom(20)
+            credits_box.set_margin_start(30)
+            credits_box.set_margin_end(30)
+            
+            # Credits heading
+            credits_heading = Gtk.Label()
+            credits_heading.set_markup('<b>Credits</b>')
+            credits_heading.set_halign(Gtk.Align.START)
+            credits_box.pack_start(credits_heading, False, False, 0)
+            
+            # Built on liquidctl
+            liquidctl_link = Gtk.LinkButton(
+                uri="https://github.com/liquidctl/liquidctl",
+                label="Built on top of liquidctl"
+            )
+            liquidctl_link.set_halign(Gtk.Align.START)
+            credits_box.pack_start(liquidctl_link, False, False, 0)
+            
+            # Project link
+            project_link = Gtk.LinkButton(
+                uri="https://github.com/amatson97/liquidctl-gui",
+                label="Project on GitHub"
+            )
+            project_link.set_halign(Gtk.Align.START)
+            credits_box.pack_start(project_link, False, False, 0)
+            
+            # License
+            license_label = Gtk.Label()
+            license_label.set_markup('<small>Licensed under MIT License</small>')
+            license_label.set_halign(Gtk.Align.START)
+            license_label.set_margin_top(10)
+            credits_box.pack_start(license_label, False, False, 0)
+            
+            content.pack_start(credits_box, True, True, 0)
+            
+            dialog.show_all()
+            dialog.run()
+            dialog.destroy()
+
+        def _on_window_destroy(self, widget):
+            """Cleanup when window is destroyed."""
+            # Cancel any pending refresh timer
+            if self.refresh_id:
+                GLib.source_remove(self.refresh_id)
+                self.refresh_id = None
+            self._logger.info("Window destroyed, cleanup complete")
+
         def _auto_initialize_devices(self):
             """Auto-initialize all devices on startup (called via timeout)."""
+            # Safety check: don't run if window is being destroyed
+            if not self.get_window():
+                self._logger.warning("Window not available, skipping auto-init")
+                return False
+            
+            # Extra safety: ensure window is realized and mapped
+            if not self.get_realized() or not self.get_mapped():
+                self._logger.warning("Window not ready, skipping auto-init")
+                return False
+            
             try:
-                self._logger.info("Auto-initializing %d device(s)", len(self.plugins))
-                for plugin in self.plugins.values():
-                    plugin.initialize()
-                self.status_label.set_text("Devices auto-initialized")
+                self._logger.info("Starting staggered initialization of %d device(s)", len(self.plugins))
+                self.status_label.set_text("Initializing devices...")
+                
+                # Stagger device initialization to avoid blocking GTK event loop
+                # Initialize one device at a time with delays between them
+                devices_to_init = list(self.plugins.items())
+                self._init_next_device(devices_to_init, 0)
+                    
             except Exception:
                 self._logger.exception("Auto-initialization failed")
+                self.status_label.set_text("Initialization failed")
             return False  # Don't repeat
 
-        def show_settings(self):
-            """Show settings dialog."""
-            dialog = Gtk.Dialog(
-                title="Settings",
-                parent=self,
-                flags=0,
-                buttons=(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL, Gtk.STOCK_OK, Gtk.ResponseType.OK)
-            )
-            dialog.set_default_size(400, 200)
+        def _init_next_device(self, devices_list, index):
+            """Initialize devices one at a time with delays (non-blocking)."""
+            if not self.get_window():
+                return False
+                
+            if index >= len(devices_list):
+                # All devices initialized
+                self._logger.info("All devices initialized")
+                self.status_label.set_text("Devices initialized")
+                
+                # Reapply profile after all devices are initialized
+                if self.last_colors or self.last_modes or self.last_speeds:
+                    GLib.timeout_add(500, self._reapply_profile_after_init)
+                return False
             
-            box = dialog.get_content_area()
-            box.set_border_width(10)
-            box.set_spacing(10)
-
-            # Auto-initialize setting
-            auto_init_check = Gtk.CheckButton(label="Auto-initialize devices on startup")
-            auto_init_check.set_active(self.config.get("auto_initialize_on_startup", True))
-            box.pack_start(auto_init_check, False, False, 0)
-
-            # Auto-refresh interval
-            interval_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-            interval_box.pack_start(Gtk.Label(label="Auto-refresh interval (seconds):"), False, False, 0)
-            interval_spin = Gtk.SpinButton.new_with_range(1, 60, 1)
-            interval_spin.set_value(self.config.get("auto_refresh_seconds", AUTO_REFRESH_SECONDS))
-            interval_box.pack_start(interval_spin, False, False, 0)
-            box.pack_start(interval_box, False, False, 0)
-
-            box.show_all()
-            response = dialog.run()
+            # Initialize this device
+            name, plugin = devices_list[index]
+            try:
+                self._logger.info("Initializing device %d/%d: %s", index + 1, len(devices_list), name)
+                self.status_label.set_text(f"Initializing {name}... ({index + 1}/{len(devices_list)})")
+                plugin.initialize()
+            except Exception as e:
+                self._logger.exception("Failed to initialize %s", name)
             
-            if response == Gtk.ResponseType.OK:
-                self.config["auto_initialize_on_startup"] = auto_init_check.get_active()
-                self.config["auto_refresh_seconds"] = int(interval_spin.get_value())
-                save_config(self.config)
-                self.show_info("Settings saved. Restart may be required for some changes.")
-            
-            dialog.destroy()
+            # Schedule next device (300ms delay between devices to let GTK breathe)
+            GLib.timeout_add(300, lambda: self._init_next_device(devices_list, index + 1))
+            return False
+
+        def _reapply_profile_after_init(self):
+            """Reapply loaded profile after initialization (separate callback)."""
+            if not self.get_window():
+                return False
+                
+            try:
+                self._logger.info("Reapplying profile settings after initialization")
+                profile_data = {
+                    "colors": self.last_colors,
+                    "modes": self.last_modes,
+                    "speeds": self.last_speeds
+                }
+                self.apply_profile_data(profile_data)
+                self._logger.info("Profile settings reapplied")
+            except Exception:
+                self._logger.exception("Failed to reapply profile")
+            return False  # Don't repeat
 
         def check_dependencies(self):
             if self.core.is_available:

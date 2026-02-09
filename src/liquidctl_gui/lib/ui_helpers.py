@@ -68,53 +68,18 @@ class UiHelpers:
         container.pack_start(scale, False, False, 0)
         return scale
 
-    def add_status_text(self, container, height=200):
+    def add_status_text(self, container, height=100):
         scroller = Gtk.ScrolledWindow()
         scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
-        scroller.set_min_content_height(height)
+        scroller.set_min_content_height(height)  # Minimal starting height
         scroller.set_hexpand(True)
-        scroller.set_vexpand(True)
+        scroller.set_vexpand(True)  # Allow vertical expansion
         text_view = Gtk.TextView()
         text_view.set_editable(False)
         text_view.set_wrap_mode(Gtk.WrapMode.WORD)
         scroller.add(text_view)
-        container.pack_start(scroller, True, True, 0)
-        return text_view.get_buffer()
-
-    def build_color_controls(self, container, section_label, device_match, channel, mode_label, device_type):
-        self.add_section_label(container, section_label)
-        self.add_button(container, "Pick Color", lambda: self.pick_color(device_match, channel))
-
-        preset_row = self.add_row(container)
-        for label, color_hex in self.get_preset_colors():
-            self.add_button(preset_row, label, lambda c=color_hex: self.apply_preset_color(device_match, channel, c))
-
-        mode_row = self.add_row(container)
-        self.add_label(mode_row, mode_label)
-        mode_combo = self.add_combo(mode_row, self.get_modes(device_type), self.get_default_mode(device_type))
-        self.add_button(mode_row, "Apply Mode", lambda: self.apply_mode(device_match, channel, mode_combo))
-
-    def build_speed_controls(self, container, device_match, scale, channels=None):
-        """Build speed control buttons.
-        
-        Args:
-            container: Parent container widget
-            device_match: Device match string
-            scale: Speed scale widget
-            channels: List of channel names. If None, defaults to ["pump", "fan"].
-        """
-        if channels is None:
-            channels = ["pump", "fan"]
-        
-        for channel in channels:
-            row = self.add_row(container)
-            self.add_label(row, f"{channel.title()} presets:")
-            for preset in self.get_speed_presets():
-                self.add_button(row, f"{preset}%", lambda p=preset, ch=channel: self.apply_speed_preset(device_match, ch, p, scale))
-
-        action_row = self.add_row(container)
-        for channel in channels:
-            self.add_button(action_row, f"Apply {channel.title()} Speed", lambda ch=channel: self.apply_speed(device_match, ch, int(scale.get_value())))
+        container.pack_start(scroller, True, True, 0)  # Expand to fill container
+        return text_view, text_view.get_buffer(), scroller
 
     def choose_file(self, title, action, default_name=None):
         dialog = Gtk.FileChooserDialog(

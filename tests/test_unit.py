@@ -67,24 +67,17 @@ Device #2: Some Other Device
 
 class TestConfigHelpers(unittest.TestCase):
     def test_config_accessors(self):
+        # Test only user-configurable settings (no device-specific hardcoding after going 100% dynamic)
         config = {
             "preset_colors": [{"label": "Cyan", "value": "#00ced1"}],
             "speed_presets": [40, "60", "bad", 100],
-            "modes": {"kraken": ["fixed", "breathing"]},
-            "default_modes": {"kraken": "fixed"},
-            "modes_with_color": ["breathing"],
-            "match_rules": [{"contains": "Kraken", "match": "kraken", "type": "kraken"}],
             "auto_refresh_seconds": "5"
         }
         helper = DummyConfig(config)
+        # Test remaining helper methods
         self.assertEqual(helper.get_preset_colors(), [("Cyan", "#00ced1")])
         self.assertEqual(helper.get_speed_presets(), [40, 60, 100])
-        self.assertEqual(helper.get_modes("kraken"), ["fixed", "breathing"])
-        self.assertEqual(helper.get_default_mode("kraken"), "fixed")
-        self.assertEqual(helper.get_modes_with_color(), {"breathing"})
         self.assertEqual(helper.get_config_int("auto_refresh_seconds", 10), 5)
-        self.assertEqual(helper.match_device("NZXT Kraken X"), ("kraken", "kraken"))
-        self.assertEqual(helper.match_device("Unknown Device"), ("Unknown Device", "generic"))
 
 
 class TestConfigIO(unittest.TestCase):

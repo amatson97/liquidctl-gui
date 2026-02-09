@@ -60,6 +60,30 @@ if ! $PYTHON -c "import gi" >/dev/null 2>&1; then
 	fi
 fi
 
+# Check for lm-sensors (for CPU/motherboard temperature monitoring)
+if ! command -v sensors >/dev/null 2>&1; then
+	echo "lm-sensors not found (optional: enables CPU/motherboard temperature monitoring)."
+	if command -v apt-get >/dev/null 2>&1; then
+		if [ "$AUTO_YES" -eq 1 ]; then
+			echo "Auto-installing lm-sensors via apt-get..."
+			sudo apt-get install -y lm-sensors
+			echo "Running sensors-detect to configure hardware sensors..."
+			sudo sensors-detect --auto
+		else
+			read -p "Install lm-sensors for system temperature monitoring? [y/N]: " ans
+			if [ "${ans,,}" = "y" ]; then
+				sudo apt-get install -y lm-sensors
+				echo "Running sensors-detect to configure hardware sensors..."
+				sudo sensors-detect --auto
+			else
+				echo "You can install it later: sudo apt install lm-sensors && sudo sensors-detect"
+			fi
+		fi
+	else
+		echo "Please install lm-sensors using your distro package manager."
+	fi
+fi
+
 # Offer to install udev rules so non-root users can write hwmon pwm nodes
 RULE_FILE=/etc/udev/rules.d/99-liquidctl.rules
 UDEV_SCRIPT="$WORKDIR/scripts/install_udev_rules.sh"

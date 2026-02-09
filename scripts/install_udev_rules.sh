@@ -12,24 +12,11 @@ fi
 
 RULE_FILE=/etc/udev/rules.d/99-liquidctl.rules
 HELPER_SCRIPT=/usr/local/bin/fix-hwmon-permissions
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TMPFILE=$(mktemp)
 
-# Generate udev rules dynamically from liquidctl
-echo "Generating udev rules from liquidctl device database..."
-if [ -f "$SCRIPT_DIR/generate_udev_rules.py" ]; then
-  # Try to use the venv Python if available
-  if [ -f "$SCRIPT_DIR/../.venv/bin/python3" ]; then
-    PYTHON="$SCRIPT_DIR/../.venv/bin/python3"
-  else
-    PYTHON="python3"
-  fi
-  
-  if $PYTHON "$SCRIPT_DIR/generate_udev_rules.py" > "$TMPFILE" 2>/dev/null; then
-    echo "✓ Generated rules for $(grep -c 'idVendor' "$TMPFILE") vendors"
-  else
-    echo "Warning: Could not generate rules dynamically, using fallback"
-    cat > "$TMPFILE" <<'EOF'
+# Create udev rules for liquidctl-supported vendors
+echo "Preparing udev rules for liquidctl devices..."
+cat > "$TMPFILE" <<'EOF'
 # Grant access to hidraw nodes for liquidctl-supported devices
 # NZXT
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1e71", MODE:="0660", GROUP:="liquidctl"
@@ -49,17 +36,6 @@ SUBSYSTEM=="hidraw", ATTRS{idVendor}=="0c70", MODE:="0660", GROUP:="liquidctl"
 # Fix hwmon permissions when devices are added (works for ALL devices)
 SUBSYSTEM=="hwmon", ACTION=="add", RUN+="/usr/local/bin/fix-hwmon-permissions /sys%p"
 EOF
-  fi
-else
-  echo "Warning: generate_udev_rules.py not found, using fallback rules"
-  cat > "$TMPFILE" <<'EOF'
-# Fallback rules - all major liquidctl vendors
-SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1e71", MODE:="0660", GROUP:="liquidctl"
-SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", MODE:="0660", GROUP:="liquidctl"
-SUBSYSTEM=="hidraw", ATTRS{idVendor}=="0b05", MODE:="0660", GROUP:="liquidctl"
-SUBSYSTEM=="hwmon", ACTION=="add", RUN+="/usr/local/bin/fix-hwmon-permissions /sys%p"
-EOF
-fi
 
 echo "This will write the udev rule to: $RULE_FILE"
 if [ "$AUTO_YES" -eq 0 ]; then
@@ -71,12 +47,38 @@ if [ "$AUTO_YES" -eq 0 ]; then
   fi
 fi
 
-echo "Installing helper script to $HELPER_SCRIPT..."
-if [ -f "$SCRIPT_DIR/fix-hwmon-permissions.sh" ]; then
-  sudo install -m 755 "$SCRIPT_DIR/fix-hwmon-permissions.sh" "$HELPER_SCRIPT"
-else
-  echo "Warning: Helper script not found at $SCRIPT_DIR/fix-hwmon-permissions.sh"
+echo "Creating helper script at $HELPER_SCRIPT..."
+sudo tee "$HELPER_SCRIPT" > /dev/null <<'HELPER_EOF'
+#!/bin/bash
+# Helper script called by udev to fix hwmon permissions
+# Sets group ownership and permissions on pwm control files
+
+HWMON_PATH="$1"
+
+if [ -z "$HWMON_PATH" ]; then
+    exit 1
 fi
+
+# Fix permissions on pwm files (fan/pump control)
+for file in "$HWMON_PATH"/pwm[0-9]* ; do
+    if [ -e "$file" ]; then
+        chgrp liquidctl "$file" 2>/dev/null
+        chmod 0660 "$file" 2>/dev/null
+    fi
+done
+
+# Fix permissions on sensor files (optional - read-only)
+for file in "$HWMON_PATH"/temp[0-9]*_input "$HWMON_PATH"/fan[0-9]*_input ; do
+    if [ -e "$file" ]; then
+        chgrp liquidctl "$file" 2>/dev/null
+        chmod 0440 "$file" 2>/dev/null
+    fi
+done
+
+exit 0
+HELPER_EOF
+
+sudo chmod 755 "$HELPER_SCRIPT"
 
 echo "Writing udev rule as root..."
 sudo install -m 644 "$TMPFILE" "$RULE_FILE"

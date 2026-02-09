@@ -6,7 +6,7 @@
 
 **Version 0.2.0** — [Changelog](CHANGELOG.md)
 
-A GTK GUI for controlling liquidctl-compatible devices. Dynamically detects and configures supported hardware with automatic initialization and persistent settings.
+A GTK GUI for controlling liquidctl-compatible devices **and motherboard PWM fans**. Dynamically detects and configures supported hardware with automatic initialization and persistent settings.
 
 Credit: built on top of https://github.com/liquidctl/liquidctl
 
@@ -49,6 +49,8 @@ Credit: built on top of https://github.com/liquidctl/liquidctl
 
 ## Features
 - **Dynamic device detection** with automatic capability discovery
+- **Motherboard PWM fan control** — Direct control of motherboard fan headers via hwmon
+- **Plugin backend architecture** — Extensible system for adding new hardware APIs
 - **Auto-initialization on startup** — devices are ready to use immediately
 - **Persistent device configurations** — UI loads with all controls on every launch
 - **LED color control** with mode selection (fixed, breathing, pulse, spectrum-wave, etc.)
@@ -131,9 +133,13 @@ When liquidctl is installed via pip, the GUI uses the Python API directly to:
 This means the GUI automatically supports any device that liquidctl supports, without needing manual configuration.
 
 ## Device Notes
-- Some devices only support lighting (no status reporting)
-- Devices with cooling support report pump/fan RPM and temperatures
-- See [liquidctl docs](https://github.com/liquidctl/liquidctl/tree/main/docs) for device-specific details
+- **USB Devices:** NZXT Kraken, Corsair Commander, etc. are detected via liquidctl
+- **Motherboard Fans:** PWM fan headers are controlled directly via Linux hwmon subsystem
+  - Minimum 20% duty cycle enforced for safety
+  - Requires udev rules for non-root access (see Setup docs)
+- **Lighting-only devices:** Some devices only support lighting (no status reporting)
+- **Cooling devices:** Devices with cooling support report pump/fan RPM and temperatures
+- See [liquidctl docs](https://github.com/liquidctl/liquidctl/tree/main/docs) for USB device-specific details
 
 ## Contributing
 Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
