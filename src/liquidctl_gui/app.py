@@ -28,6 +28,7 @@ from .lib import sensors_api
 from .lib.backends import discover_devices, get_all_backends
 from .lib.device_controller import DeviceController
 from .lib.profile_manager import ProfileManager
+from .lib.startup import disable_startup, enable_startup, get_startup_enabled
 
 
 APP_TITLE = f"Liquidctl Controller v{__version__}"
@@ -49,6 +50,7 @@ DEFAULT_CONFIG = {
     },
     "status_text_height": STATUS_TEXT_HEIGHT,
     "auto_initialize_on_startup": True,
+    "launch_on_boot": False,
     "default_speed": DEFAULT_SPEED,
     "speed_presets": [40, 60, 80, 100],
     "log_level": "INFO",
@@ -1168,6 +1170,25 @@ if GTK_AVAILABLE:
             content.set_border_width(12)
             content.set_spacing(10)
 
+            startup_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            content.pack_start(startup_row, False, False, 0)
+            startup_label = Gtk.Label(label="Apply Profile at Boot")
+            startup_label.set_xalign(0)
+            startup_row.pack_start(startup_label, True, True, 0)
+            startup_toggle = Gtk.CheckButton()
+            startup_toggle.set_active(bool(self.config.get("launch_on_boot", False)))
+            startup_row.pack_start(startup_toggle, False, False, 0)
+
+            startup_enabled, startup_error = get_startup_enabled()
+            if startup_error is None:
+                startup_toggle.set_active(startup_enabled)
+            else:
+                startup_toggle.set_sensitive(False)
+                startup_note = Gtk.Label(label=f"Startup service unavailable: {startup_error}")
+                startup_note.set_xalign(0)
+                startup_note.set_line_wrap(True)
+                content.pack_start(startup_note, False, False, 0)
+
             log_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
             content.pack_start(log_row, False, False, 0)
             log_label = Gtk.Label(label="Log level")
@@ -1195,6 +1216,16 @@ if GTK_AVAILABLE:
             if response == Gtk.ResponseType.OK:
                 selected = log_combo.get_active_text() or "INFO"
                 self.config["log_level"] = selected
+                desired_startup = startup_toggle.get_active()
+                if desired_startup != bool(self.config.get("launch_on_boot", False)):
+                    if desired_startup:
+                        ok, err = enable_startup()
+                    else:
+                        ok, err = disable_startup()
+                    if not ok:
+                        self.show_error(err or "Failed to update startup setting")
+                    else:
+                        self.config["launch_on_boot"] = desired_startup
                 save_config(self.config)
                 self._apply_log_level()
             dialog.destroy()
