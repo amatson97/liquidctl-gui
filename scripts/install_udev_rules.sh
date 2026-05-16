@@ -28,6 +28,8 @@ SUBSYSTEM=="hidraw", ATTRS{idVendor}=="0b05", MODE:="0660", GROUP:="liquidctl"
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="3842", MODE:="0660", GROUP:="liquidctl"
 # Gigabyte
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1044", MODE:="0660", GROUP:="liquidctl"
+# Gigabyte RGB Fusion 2.0 (common USB controller VID)
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="048d", MODE:="0660", GROUP:="liquidctl"
 # Cooler Master
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="2516", MODE:="0660", GROUP:="liquidctl"
 # Aquacomputer
@@ -93,6 +95,7 @@ sudo usermod -aG liquidctl "$USER"
 echo "Reloading udev rules and triggering..."
 sudo udevadm control --reload
 sudo udevadm trigger --subsystem-match=hwmon
+sudo udevadm trigger --subsystem-match=hidraw --action=add
 
 echo "Fixing permissions on existing hwmon devices..."
 for hwmon_dev in /sys/class/hwmon/hwmon*; do
@@ -105,8 +108,8 @@ echo "Fixing permissions on existing hidraw devices..."
 # Apply permissions to already-connected devices
 for hidraw_dev in /dev/hidraw*; do
   if [ -e "$hidraw_dev" ]; then
-    # Get vendor ID from device
-    vid=$(udevadm info -a "$hidraw_dev" 2>/dev/null | grep -m1 'ATTRS{idVendor}' | cut -d'"' -f2)
+    # Get vendor ID from device properties (more reliable than attribute tree parsing)
+    vid=$(udevadm info --query=property --name="$hidraw_dev" 2>/dev/null | awk -F= '/^ID_VENDOR_ID=/{print $2; exit}')
     # Check if this vendor is in our rules file
     if [ -n "$vid" ] && grep -q "\"$vid\"" "$RULE_FILE" 2>/dev/null; then
       echo "  Updating $hidraw_dev (vendor: $vid)"
@@ -118,6 +121,7 @@ done
 
 echo ""
 echo "Done! Permissions have been applied."
+echo "If device access still fails, replug USB devices (or reboot) and log out/in to refresh group membership."
 echo "Verify: ls -la /dev/hidraw* | grep liquidctl"
 echo "        ls -la /sys/class/hwmon/hwmon*/pwm*"
 

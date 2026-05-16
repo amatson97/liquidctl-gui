@@ -4,8 +4,10 @@ import json
 from copy import deepcopy
 from pathlib import Path
 
+from .user_paths import resolve_user_context
 
-CONFIG_DIR = Path.home() / ".liquidctl-gui"
+
+CONFIG_DIR = resolve_user_context().home / ".liquidctl-gui"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 PROFILES_DIR = CONFIG_DIR / "profiles"
 CURRENT_PROFILE_FILE = CONFIG_DIR / "current_profile.json"

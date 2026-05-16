@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import os
+import pwd
 import subprocess
 from pathlib import Path
 import sys
+
+from .user_paths import resolve_user_context
 
 SERVICE_NAME = "liquidctl-gui.service"
 
@@ -14,7 +18,7 @@ def _repo_root() -> Path:
 
 
 def _unit_path() -> Path:
-    return Path.home() / ".config" / "systemd" / "user" / SERVICE_NAME
+    return resolve_user_context().home / ".config" / "systemd" / "user" / SERVICE_NAME
 
 
 def _render_unit(exec_path: str, workdir: str) -> str:
@@ -38,10 +42,21 @@ def _render_unit(exec_path: str, workdir: str) -> str:
 
 def _run_systemctl(args: list[str]) -> tuple[int, str]:
     try:
+        context = resolve_user_context()
+        env = os.environ.copy()
+        if os.geteuid() == 0 and context.username and context.username != "root":
+            try:
+                entry = pwd.getpwnam(context.username)
+            except KeyError:
+                pass
+            else:
+                env.setdefault("HOME", context.home.as_posix())
+                env["XDG_RUNTIME_DIR"] = f"/run/user/{entry.pw_uid}"
         result = subprocess.run(
             ["systemctl", "--user", *args],
             capture_output=True,
             text=True,
+            env=env,
             check=False,
         )
     except FileNotFoundError:

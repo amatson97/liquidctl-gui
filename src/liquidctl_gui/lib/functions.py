@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from typing import List
 
 from .liquidctl_api import LiquidctlAPI, LIQUIDCTL_AVAILABLE, SIMULATION_MODE
+from .user_paths import resolve_user_context
 
 
 @dataclass
@@ -53,9 +54,10 @@ class LiquidctlCore:
         if which_path:
             return which_path
 
+        user_home = resolve_user_context().home
         candidates = [
-            Path.home() / ".local/bin/liquidctl",
-            Path.home() / ".local/pipx/venvs/liquidctl/bin/liquidctl",
+            user_home / ".local/bin/liquidctl",
+            user_home / ".local/pipx/venvs/liquidctl/bin/liquidctl",
             Path("/usr/local/bin/liquidctl"),
             Path("/usr/bin/liquidctl"),
         ]
